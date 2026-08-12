@@ -30,11 +30,10 @@ const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
 
-// M2-D010 工具描述中文定稿 (v3) 原文, 逐字含标点.
+// 工具描述 (v5): 接口形状 + 选用时机/理由; 行为规范全在 promptGuidelines; 结果自带的信息 (如中止文本里的 resume 指引) 不在此缓存.
 const TOOL_DESCRIPTION =
-  "把可独立的任务优先委派给子代理, 保持主会话上下文精简; 调用后阻塞等待结果. 单次: agent + task. " +
-  "并行: tasks[] (≤8, 并发 4), 全部跑完, 失败逐任务报告 — 适合只读工作 (审查/研究) 和写互不重叠产物的任务; " +
-  "改动共享文件 (项目代码/配置) 须串行单写. action:\"list\" 发现可用 agents; \"resume\" + id 恢复被 timeout/usageBudget 中止的运行.";
+  "把可独立的任务优先委派给子代理, 保持主会话上下文精简; 调用后阻塞等待结果. " +
+  "单次: agent + task. 并行: tasks[]. action:\"list\" 发现 agents; \"resume\" + id 恢复中止的运行.";
 
 // M2-D008 参数 3: tasks item 结构.
 const TaskItem = Type.Object({
@@ -430,14 +429,14 @@ export default function (pi: ExtensionAPI) {
     description: TOOL_DESCRIPTION,
     // System Prompt 面 (与 resolve-skill 同机制): snippet 进 Available tools, guidelines 进 Guidelines.
     // 写法规格: 每条必须与 description/schema 零重复, 只装模型无法从参数面推断的操作知识.
-    promptSnippet: "委派子代理执行独立任务 (单次/并行/恢复中止的运行).",
+    promptSnippet: "把独立任务委派给子代理执行.",
     promptGuidelines: [
-      // 最大失败模式: task 引用本会话上下文 — 子代理是全新上下文的独立进程, 看不到对话历史.
-      "子代理是全新上下文的独立进程, 看不到本会话: task 必须自包含 (目标/相关文件路径/约束), 不引用对话历史.",
-      // M6 新增行为, 模型无法从描述推断: 中止文本自带 runId, 尾段报号是放宽后的匹配规则.
-      "被 timeout/usageBudget 中止的运行, 返回文本自带 runId 与恢复指引; resume 时 id 从头报前缀或只报随机尾段均可.",
+      // 最大失败模式: task 引用本会话上下文 — 子代理是全新上下文的独立进程.
+      "子代理是全新上下文的独立进程: task 必须自包含 (目标/相关文件路径/约束), 不引用本会话内容.",
+      // 真行为约束: 防并行写冲突 (并发 4/上限 8 由 schema 参数描述承担, 不重复).
+      "并行适合只读工作 (审查/研究) 或写互不重叠产物的任务; 改动共享文件 (项目代码/配置) 须串行单写.",
       // 点名内置名册, 省掉常用路径下的 list 往返.
-      "内置 agents: explorer (只读探查/研究), worker (写/执行), reviewer (只读审查); 不确定有哪些可用时 action:\"list\".",
+      "内置 agents: explorer (只读探查), worker (执行), reviewer (只读审查).",
     ],
     parameters: SubagentParams,
     async execute(

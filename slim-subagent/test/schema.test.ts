@@ -9,11 +9,10 @@ import extensionFactory from "../index.ts";
 // M2-D008 钉死的 9 个参数名
 const PINNED_PARAMS = ["agent", "task", "tasks", "model", "timeoutMs", "usageBudget", "cwd", "action", "id"];
 
-// M2-D010 工具描述 v3 原文 (逐字, 含标点)
-const V3_DESCRIPTION =
-  '把可独立的任务优先委派给子代理, 保持主会话上下文精简; 调用后阻塞等待结果. 单次: agent + task. ' +
-  '并行: tasks[] (≤8, 并发 4), 全部跑完, 失败逐任务报告 — 适合只读工作 (审查/研究) 和写互不重叠产物的任务; ' +
-  '改动共享文件 (项目代码/配置) 须串行单写. action:"list" 发现可用 agents; "resume" + id 恢复被 timeout/usageBudget 中止的运行.';
+// 工具描述钉版原文 (v5: 恢复 v3 的 "优先" 委派偏置, 行为规范全在 guidelines; 逐字含标点)
+const PINNED_DESCRIPTION =
+  '把可独立的任务优先委派给子代理, 保持主会话上下文精简; 调用后阻塞等待结果. ' +
+  '单次: agent + task. 并行: tasks[]. action:"list" 发现 agents; "resume" + id 恢复中止的运行.';
 
 function captureRegistration(): {
   name: string;
@@ -44,9 +43,9 @@ test("TC-001 schema exposes exactly 9 pinned params", () => {
   assert.deepEqual(names.sort(), [...PINNED_PARAMS].sort());
 });
 
-test("TC-002 description matches pinned v3 text", () => {
+test("TC-002 description matches pinned v4 text", () => {
   const { description } = captureRegistration();
-  assert.equal(description, V3_DESCRIPTION);
+  assert.equal(description, PINNED_DESCRIPTION);
 });
 
 test("TC-002prompt system-prompt 面存在且与描述零重复", () => {
