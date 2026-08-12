@@ -1,0 +1,500 @@
+// slim-subagent 扩展入口 — ISSUE-01 (TS-001~003) + ISSUE-02 (TS-001) + ISSUE-03 (timeout/diagnostics) + ISSUE-04 (usageBudget)
+// + ISSUE-05 (parallel 并行) 切片.
+// 本切片: onUpdate 流式接线 (M3-02 考察点 6) + run.json tools 快照 (EXECUTION.md 调和 14);
+// ISSUE-05: tasks[] 并行分支 (M2-D004/M2-D008, 官方示例 mapWithConcurrencyLimit 整搬 + 聚合).
+// 覆盖: registerTool 注册名 "subagent" (M2-D001) + schema 恰 9 参数 (M2-D008) + 描述 v3 原文 (M2-D010);
+// action:"list" 发现 (M1-D009, M2-D007); execute 校验 (M2-D008 条件必填, M1-D009 error-driven 兜底);
+// single 分支接入真实 spawn + timeout 管线 (single.ts) + usageBudget 触顶终止透传;
+// parallel 分支: 并发 4/最大 8 + 批次 run.json (调和 12) + per-child run-<idx> session + 顶层默认/item 覆盖;
+// resume (ISSUE-06): 分发到 resume.ts (寻址/校验/恢复 spawn/锁/结果标记, 见 resume.ts).
+
+import { Type } from "typebox";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+// ISSUE-07: TUI 最小渲染依赖 (官方示例同法 import; 测试环境仅模块加载/构造, 不调用 render).
+import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import type { Component } from "@earendil-works/pi-tui";
+import { discoverAgents, formatAgentList } from "./agents.ts";
+import type { AgentConfig } from "./agents.ts";
+import { runSingleAgent, makeRunId, sessionRootDir } from "./single.ts";
+import type { SingleDetails, StreamUpdateCallback, Usage } from "./single.ts";
+import { runResume, runSessionGc } from "./resume.ts";
+
+// ISSUE-05: 官方示例 index.ts:33-34 同款常量 (M1-D001(2): 并发 4 / 最大 8, 硬编码不可调).
+const MAX_PARALLEL_TASKS = 8;
+const MAX_CONCURRENCY = 4;
+// ISSUE-07: 官方示例 :36-37 同款常量 — 折叠态行数上限 / parallel 汇总 per-task 输出字节上限.
+const COLLAPSED_ITEM_COUNT = 10;
+const PER_TASK_OUTPUT_CAP = 50 * 1024;
+
+// M2-D010 工具描述中文定稿 (v3) 原文, 逐字含标点.
+const TOOL_DESCRIPTION =
+  "把可独立的任务优先委派给子代理, 保持主会话上下文精简; 调用后阻塞等待结果. 单次: agent + task. " +
+  "并行: tasks[] (≤8, 并发 4), 全部跑完, 失败逐任务报告 — 适合只读工作 (审查/研究) 和写互不重叠产物的任务; " +
+  "改动共享文件 (项目代码/配置) 须串行单写. action:\"list\" 发现可用 agents; \"resume\" + id 恢复被 timeout/usageBudget 中止的运行.";
+
+// M2-D008 参数 3: tasks item 结构.
+const TaskItem = Type.Object({
+  agent: Type.String({ description: "agent 名" }),
+  task: Type.String({ description: "并行任务" }),
+  model: Type.Optional(Type.String({ description: "覆盖 agent frontmatter 的 model" })),
+  timeoutMs: Type.Optional(Type.Number({ description: "超时毫秒" })),
+  usageBudget: Type.Optional(Type.Number({ description: "token 上限" })),
+});
+
+// M2-D008 schema 恰 9 参数; 条件必填 (agent 在 action:"list" 时可省, task/tasks 互斥) 由 execute 校验承担 (TS-003), typebox 不表达.
+const SubagentParams = Type.Object({
+  agent: Type.Optional(Type.String({ description: "agent 名" })),
+  task: Type.Optional(Type.String({ description: "单次任务; 与 tasks 互斥" })),
+  tasks: Type.Optional(Type.Array(TaskItem, { description: "parallel 任务数组, ≤8" })),
+  model: Type.Optional(Type.String({ description: "覆盖 agent frontmatter 的 model" })),
+  timeoutMs: Type.Optional(Type.Number({ description: "超时毫秒, 默认 900000" })),
+  usageBudget: Type.Optional(Type.Number({ description: "累计 input+output+cacheWrite token 上限, 触顶中止" })),
+  cwd: Type.Optional(Type.String({ description: "子代理工作目录, 默认继承父会话" })),
+  action: Type.Optional(Type.Union([Type.Literal("list"), Type.Literal("resume")], { description: "缺省 = 执行" })),
+  id: Type.Optional(Type.String({ description: "resume 目标 run-id" })),
+});
+
+// M2-D008 条件必填校验 (typebox 不表达, 由 execute 承担): task 与 tasks 互斥且至少其一;
+// 单次 (task) 时 agent 必填 (review 修复项 1: 缺 agent 明确报错列用法, 不泄露内部 undefined);
+// 未知 agent 报错并列候选名 (M1-D009 error-driven 兜底, 文本形态对齐官方示例 index.ts:276-283:
+// `Unknown agent: "X". Available agents: ...`). 并行 tasks[].agent 的逐项检查随 spawn 属 ISSUE-02.
+function validateExecuteParams(
+  params: { agent?: unknown; task?: unknown; tasks?: unknown } | null | undefined,
+  agents: AgentConfig[],
+): string | undefined {
+  const hasTask = typeof params?.task === "string" && params.task.trim() !== "";
+  const hasTasks = Array.isArray(params?.tasks) && (params.tasks as unknown[]).length > 0;
+
+  if (hasTask && hasTasks) {
+    return "task 与 tasks 互斥, 只能二选一 (单次: agent + task; 并行: tasks[])";
+  }
+  if (!hasTask && !hasTasks) {
+    return "缺省 action 时须提供 task 或 tasks 至少其一 (单次: agent + task; 并行: tasks[])";
+  }
+
+  // M2-D008 执行模式 agent 条件必填: 有 task 无 agent → 明确报错 (列用法, 不泄露内部 undefined).
+  if (hasTask && typeof params?.agent !== "string") {
+    return "单次执行须提供 agent 名 (action:\"list\" 可省): 用法 {agent: \"<agent 名>\", task: \"<任务>\"}";
+  }
+  if (hasTask && typeof params?.agent === "string") {
+    const known = agents.some((a) => a.name === params.agent);
+    if (!known) {
+      const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
+      return `Unknown agent: "${params.agent}". Available agents: ${available}.`;
+    }
+  }
+  return undefined;
+}
+
+// ISSUE-05: parallel 聚合结果类型 — 每 child 独立 isError (M2-D004), details 透传 (runId/sessionDir, M2-D006).
+export interface ParallelChildResult {
+  index: number;
+  agent: string;
+  task: string;
+  isError: boolean;
+  text: string;
+  details: SingleDetails;
+}
+export interface ParallelDetails {
+  mode: "parallel";
+  runId: string;
+  results: ParallelChildResult[];
+}
+
+function emptyUsage() {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
+}
+
+// ---- ISSUE-07: TUI 最小渲染辅助 (官方示例 index.ts 移植最小版; 效果人工验证 TS-002). ----
+
+function formatTokens(count: number): string {
+  if (count < 1000) return count.toString();
+  if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
+  if (count < 1000000) return `${Math.round(count / 1000)}k`;
+  return `${(count / 1000000).toFixed(1)}M`;
+}
+
+// usage 统计行 (tokens/cost/turns/model, 官方 formatUsageStats 最小版).
+function formatUsageStats(usage: Usage, model?: string): string {
+  const parts: string[] = [];
+  if (usage.turns) parts.push(`${usage.turns} turn${usage.turns > 1 ? "s" : ""}`);
+  if (usage.input) parts.push(`↑${formatTokens(usage.input)}`);
+  if (usage.output) parts.push(`↓${formatTokens(usage.output)}`);
+  if (usage.cacheRead) parts.push(`R${formatTokens(usage.cacheRead)}`);
+  if (usage.cacheWrite) parts.push(`W${formatTokens(usage.cacheWrite)}`);
+  if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
+  if (model) parts.push(model);
+  return parts.join(" ");
+}
+
+// ISSUE-07 deferred (c): parallel 汇总 per-task 输出 50KB 截断 (官方 :36/:193-202 最小版, 字节安全).
+// 导出: 单测直接断言 (TC-011).
+export function truncateParallelOutput(output: string): string {
+  const byteLength = Buffer.byteLength(output, "utf8");
+  if (byteLength <= PER_TASK_OUTPUT_CAP) return output;
+  let truncated = output.slice(0, PER_TASK_OUTPUT_CAP);
+  while (Buffer.byteLength(truncated, "utf8") > PER_TASK_OUTPUT_CAP) truncated = truncated.slice(0, -1);
+  return `${truncated}\n\n[Output truncated: ${byteLength - Buffer.byteLength(truncated, "utf8")} bytes omitted. Full output preserved in tool details.]`;
+}
+
+function resultTextOf(res: AgentToolResult<unknown>): string {
+  return res.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+}
+
+// EXECUTION.md 调和 12: 批次根 run.json — mode:"parallel" + tasks 快照 (各 child agent/model/tools + task);
+// per-child 仅存 run-<idx>/session.jsonl 不写 run.json (原子写: 同目录 tmp + rename, 对齐 single writeRunJson).
+function writeParallelRunJson(
+  data: {
+    runId: string;
+    cwd: string;
+    startedAt: string;
+    tasks: { agent: string; task: string; model?: string; tools?: string[] }[];
+  },
+  sessionDir: string,
+): void {
+  const runJson = {
+    runId: data.runId,
+    mode: "parallel",
+    cwd: data.cwd,
+    startedAt: data.startedAt,
+    tasks: data.tasks,
+  };
+  const target = path.join(sessionDir, "run.json");
+  const tmp = path.join(sessionDir, "run.json.tmp");
+  fs.writeFileSync(tmp, JSON.stringify(runJson, null, 2) + "\n");
+  fs.renameSync(tmp, target);
+}
+
+// ISSUE-05: 官方示例 index.ts:221-240 整搬 — 并发上限 worker 池, 结果按 index 保序, 全部跑完再汇总
+// (M3-04 考察点 5: 无全局 Semaphore, limit 由 Math.max/min 钳制).
+async function mapWithConcurrencyLimit<TIn, TOut>(
+  items: TIn[],
+  concurrency: number,
+  fn: (item: TIn, index: number) => Promise<TOut>,
+): Promise<TOut[]> {
+  if (items.length === 0) return [];
+  const limit = Math.max(1, Math.min(concurrency, items.length));
+  const results: TOut[] = new Array(items.length);
+  let nextIndex = 0;
+  const workers = new Array(limit).fill(null).map(async () => {
+    while (true) {
+      const current = nextIndex++;
+      if (current >= items.length) return;
+      results[current] = await fn(items[current], current);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+// ISSUE-05: tasks[] 并行执行 (M2-D004 语义, 官方示例 index.ts:584-663 移植简化).
+// 每 child 复用 single 管线 (runSingleAgent) 为执行单元; 全部跑完再汇总, 每任务独立 isError, 不 fail-fast;
+// 聚合顶层不置 isError (官方同款), 每任务失败态在 details.results 独立暴露.
+async function runParallelTasks(
+  params: { tasks?: unknown; model?: unknown; timeoutMs?: unknown; usageBudget?: unknown; cwd?: unknown },
+  agents: AgentConfig[],
+  cwd: string,
+  signal: AbortSignal | undefined,
+  getContextUsage: (() => { tokens: number | null; contextWindow: number; percent: number | null } | undefined) | undefined,
+  onUpdate?: StreamUpdateCallback, // ISSUE-07 deferred (b): parallel onUpdate 聚合流
+): Promise<AgentToolResult<ParallelDetails>> {
+  const tasks = params.tasks as { agent?: unknown; task?: unknown; model?: unknown; timeoutMs?: unknown; usageBudget?: unknown }[];
+  // ISSUE-07 deferred (d): item 级 task 校验 (与 single 模式对齐 — 空串/非 string 显式报错, 不静默变空串).
+  for (let i = 0; i < tasks.length; i++) {
+    const t = tasks[i];
+    if (typeof t !== "object" || t === null || typeof t.task !== "string" || t.task.trim() === "") {
+      return {
+        content: [{ type: "text", text: `tasks[${i}].task must be a non-empty string` }],
+        details: { mode: "parallel", runId: "", results: [] },
+        isError: true,
+      };
+    }
+  }
+  // 官方示例 index.ts:584-590 (M2-D004 硬顶 8): 超限直接报错, 逐字文案.
+  if (tasks.length > MAX_PARALLEL_TASKS) {
+    return {
+      content: [{ type: "text", text: `Too many parallel tasks (${tasks.length}). Max is ${MAX_PARALLEL_TASKS}.` }],
+      details: { mode: "parallel", runId: "", results: [] },
+      isError: true,
+    };
+  }
+
+  const batchRunId = makeRunId();
+  const batchRoot = sessionRootDir(batchRunId);
+  fs.mkdirSync(batchRoot, { recursive: true });
+  // M2-D008: 顶层 model/timeoutMs/usageBudget 作批默认, item 级字段覆盖 (undefined 回退顶层默认).
+  const defaultModel = typeof params.model === "string" && params.model !== "" ? params.model : undefined;
+  const defaultTimeout = typeof params.timeoutMs === "number" ? params.timeoutMs : undefined;
+  const defaultBudget = params.usageBudget as number | undefined;
+  const resolved = tasks.map((t) => {
+    const agent = agents.find((a) => a.name === t.agent);
+    const model = typeof t.model === "string" && t.model !== "" ? t.model : defaultModel;
+    const timeoutMs = typeof t.timeoutMs === "number" ? t.timeoutMs : defaultTimeout;
+    const usageBudget = (t.usageBudget as number | undefined) ?? defaultBudget;
+    return { item: t, agent, model, timeoutMs, usageBudget };
+  });
+
+  // 批次 run.json (调和 12): tasks 快照含各 child agent/model/tools + task (model 取合并后生效值).
+  writeParallelRunJson(
+    {
+      runId: batchRunId,
+      cwd,
+      startedAt: new Date().toISOString(),
+      tasks: resolved.map((r) => {
+        // model 取完全生效值 (item 覆盖 ?? 顶层默认 ?? agent frontmatter, 对齐 runSingleAgent effectiveModel).
+        const effectiveModel = r.model ?? r.agent?.model;
+        return {
+          agent: String(r.item.agent),
+          task: typeof r.item.task === "string" ? r.item.task : "",
+          ...(effectiveModel ? { model: effectiveModel } : {}),
+          ...(r.agent?.tools && r.agent.tools.length > 0 ? { tools: r.agent.tools } : {}),
+        };
+      }),
+    },
+    batchRoot,
+  );
+
+  // ISSUE-07 deferred (b): parallel onUpdate 聚合流 (官方 :596-608 最小版) — allResults 槽位 (exitCode -1 = running 占位)
+  // + completedFlags 计数; 初始 1 次 + 每 child 完成后各 1 次. 不做 per-child 流式镜像 (最小版, 超出 :596-608 范围).
+  const allResults: ParallelChildResult[] = tasks.map((t, i) => ({
+    index: i, agent: typeof t.agent === "string" ? t.agent : "", task: typeof t.task === "string" ? t.task : "",
+    isError: false, text: "(running...)", details: { usage: emptyUsage(), runId: batchRunId, sessionDir: "", exitCode: -1 },
+  }));
+  const completedFlags = new Array<boolean>(tasks.length).fill(false);
+  const emitParallelUpdate = () => {
+    if (!onUpdate) return;
+    const done = completedFlags.filter(Boolean).length;
+    onUpdate({ content: [{ type: "text", text: `Parallel: ${done}/${tasks.length} done, ${tasks.length - done} running...` }], details: { mode: "parallel", results: [...allResults], progress: [] } });
+  };
+  emitParallelUpdate(); // 初始 1 次 (全部 running)
+
+  const runChild = async (r: (typeof resolved)[number], index: number): Promise<ParallelChildResult> => {
+    const t = r.item;
+    const agent = r.agent;
+    const task = typeof t.task === "string" ? t.task : "";
+    // per-child 未知 agent → 该任务独立失败 (官方 runSingleAgent 同款, M1-D009 文案), 不阻塞整批 (M2-D004).
+    if (!agent) {
+      const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
+      const failed: ParallelChildResult = { index, agent: String(t.agent), task, isError: true, text: `Unknown agent: "${String(t.agent)}". Available agents: ${available}.`, details: { usage: emptyUsage(), runId: "", sessionDir: "", exitCode: 1 } };
+      allResults[index] = failed;
+      completedFlags[index] = true;
+      emitParallelUpdate();
+      return failed;
+    }
+    const res = await runSingleAgent({
+      agent,
+      task,
+      model: r.model,
+      cwd,
+      timeoutMs: r.timeoutMs,
+      usageBudget: r.usageBudget,
+      signal,
+      getContextUsage,
+      // 调和 12: per-child 共享批次 runId + run-<idx> 子目录, 不写 per-child run.json.
+      runId: batchRunId,
+      sessionDir: path.join(batchRoot, `run-${index}`),
+      skipRunJson: true,
+    });
+    const completed: ParallelChildResult = { index, agent: agent.name, task, isError: res.isError === true, text: resultTextOf(res), details: res.details };
+    allResults[index] = completed;
+    completedFlags[index] = true;
+    emitParallelUpdate();
+    return completed;
+  };
+  const results = await mapWithConcurrencyLimit(resolved, MAX_CONCURRENCY, async (r, index) => runChild(r, index));
+
+  // M2-D004 汇总 (官方示例 :647-663 形态): 成功计数 + 逐任务状态标记 + per-task 输出 50KB 截断 (deferred c).
+  const successCount = results.filter((r) => !r.isError).length;
+  const summaries = results.map((r) => {
+    const status = r.isError
+      ? (r.details.stopReason && r.details.stopReason !== "stop" ? `failed (${r.details.stopReason})` : `failed (exit ${r.details.exitCode})`)
+      : "completed";
+    return `### [${r.agent}] ${status}\n\n${truncateParallelOutput(r.text)}`;
+  });
+  return {
+    content: [{ type: "text", text: `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n---\n\n")}` }],
+    details: { mode: "parallel", runId: batchRunId, results },
+  };
+}
+
+// ---- ISSUE-07: TUI 最小渲染 (M1-D001(9), 官方示例 :700-/:744- 最小版; 效果人工验证 TS-002). ----
+// 折叠 ≤COLLAPSED_ITEM_COUNT 行 + Ctrl+O 展开; 展开态 Container + Markdown; usage 统计行; getMarkdownTheme 仅展开态调用.
+
+function renderCallComponent(args: { agent?: unknown; task?: unknown; tasks?: unknown[] }, theme: Theme): Component {
+  const preview = (s: unknown, n: number) => { const str = typeof s === "string" ? s : ""; return str.length > n ? `${str.slice(0, n)}...` : str; };
+  let text = theme.fg("toolTitle", theme.bold("subagent "));
+  if (Array.isArray(args.tasks) && args.tasks.length > 0) {
+    text += theme.fg("accent", `parallel (${args.tasks.length} tasks)`);
+    for (const t of args.tasks.slice(0, 3)) {
+      const item = (t ?? {}) as { agent?: unknown; task?: unknown };
+      text += `\n  ${theme.fg("accent", typeof item.agent === "string" ? item.agent : "?")}${theme.fg("dim", ` ${preview(item.task, 40)}`)}`;
+    }
+    if (args.tasks.length > 3) text += `\n  ${theme.fg("muted", `... +${args.tasks.length - 3} more`)}`;
+  } else {
+    text += theme.fg("accent", typeof args.agent === "string" ? args.agent : "...");
+    text += `\n  ${theme.fg("dim", preview(args.task, 60) || "...")}`;
+  }
+  return new Text(text, 0, 0);
+}
+
+function renderSingleComponent(
+  opts: { agent: string; isError: boolean; stopReason?: string; errorMessage?: string; output: string; usage?: Usage; model?: string },
+  expanded: boolean,
+  theme: Theme,
+): Component {
+  const icon = opts.isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
+  const header = `${icon} ${theme.fg("toolTitle", theme.bold(opts.agent))}${opts.isError && opts.stopReason ? ` ${theme.fg("error", `[${opts.stopReason}]`)}` : ""}`;
+  const usageStr = opts.usage ? formatUsageStats(opts.usage, opts.model) : "";
+  if (expanded) {
+    const container = new Container();
+    container.addChild(new Text(header, 0, 0));
+    if (opts.isError && opts.errorMessage) container.addChild(new Text(theme.fg("error", `Error: ${opts.errorMessage}`), 0, 0));
+    container.addChild(new Spacer(1));
+    if (opts.output.trim()) container.addChild(new Markdown(opts.output.trim(), 0, 0, getMarkdownTheme()));
+    else container.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
+    if (usageStr) {
+      container.addChild(new Spacer(1));
+      container.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
+    }
+    return container;
+  }
+  const lines = opts.output.split("\n");
+  let text = header;
+  if (opts.isError && opts.errorMessage) text += `\n${theme.fg("error", `Error: ${opts.errorMessage}`)}`;
+  else if (lines.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
+  else {
+    text += `\n${lines.slice(0, COLLAPSED_ITEM_COUNT).map((l) => theme.fg("toolOutput", l)).join("\n")}`;
+    if (lines.length > COLLAPSED_ITEM_COUNT) text += `\n${theme.fg("muted", `... ${lines.length - COLLAPSED_ITEM_COUNT} more lines (Ctrl+O to expand)`)}`;
+  }
+  if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
+  return new Text(text, 0, 0);
+}
+
+function renderParallelComponent(results: ParallelChildResult[], expanded: boolean, theme: Theme): Component {
+  const successCount = results.filter((r) => !r.isError).length;
+  const status = `${successCount}/${results.length} tasks`;
+  const icon = successCount === results.length ? theme.fg("success", "✓") : theme.fg("warning", "◐");
+  const total = emptyUsage();
+  for (const r of results) {
+    total.input += r.details.usage.input;
+    total.output += r.details.usage.output;
+    total.cacheRead += r.details.usage.cacheRead;
+    total.cacheWrite += r.details.usage.cacheWrite;
+    total.cost += r.details.usage.cost;
+    total.turns += r.details.usage.turns;
+  }
+  const totalUsage = formatUsageStats(total);
+  if (expanded) {
+    const container = new Container();
+    container.addChild(new Text(`${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`, 0, 0));
+    for (const r of results) {
+      const rIcon = r.isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
+      container.addChild(new Spacer(1));
+      container.addChild(new Text(`${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${rIcon}`, 0, 0));
+      container.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", r.task), 0, 0));
+      if (r.text.trim()) container.addChild(new Markdown(r.text.trim(), 0, 0, getMarkdownTheme()));
+      const u = formatUsageStats(r.details.usage, r.details.model);
+      if (u) container.addChild(new Text(theme.fg("dim", u), 0, 0));
+    }
+    if (totalUsage) {
+      container.addChild(new Spacer(1));
+      container.addChild(new Text(theme.fg("dim", `Total: ${totalUsage}`), 0, 0));
+    }
+    return container;
+  }
+  let text = `${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`;
+  for (const r of results) {
+    const rIcon = r.isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
+    const lines = r.text.split("\n");
+    text += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${rIcon}`;
+    if (lines.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
+    else text += `\n${lines.slice(0, 5).map((l) => theme.fg("toolOutput", l)).join("\n")}`;
+  }
+  if (totalUsage) text += `\n\n${theme.fg("dim", `Total: ${totalUsage}`)}`;
+  text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
+  return new Text(text, 0, 0);
+}
+
+export default function (pi: ExtensionAPI) {
+  // ISSUE-06 TS-003: session_start 挂点 — 按龄 GC 扫一次 (M2-D005, pi docs/extensions.md 事件表;
+  // 测试直接调 runSessionGc hook 函数, 不依赖 pi 内部触发).
+  (pi as { on?: (event: "session_start", handler: () => void) => void }).on?.("session_start", () => runSessionGc());
+
+  pi.registerTool({
+    name: "subagent",
+    label: "Subagent",
+    description: TOOL_DESCRIPTION,
+    parameters: SubagentParams,
+    async execute(
+      _toolCallId: string,
+      _params: unknown,
+      _signal: AbortSignal | undefined,
+      onUpdate: StreamUpdateCallback | undefined, // M3-02 考察点 6: 流式更新回调透传 single 管线
+      _ctx: ExtensionContext,
+    ): Promise<AgentToolResult> {
+      const params = _params as
+        | { action?: unknown; agent?: unknown; task?: unknown; tasks?: unknown; usageBudget?: unknown; model?: unknown; timeoutMs?: unknown; cwd?: unknown }
+        | null
+        | undefined;
+
+      // TS-002: action:"list" (M1-D009 最小名册), agent 可省 (M2-D008).
+      if (params?.action === "list") {
+        return {
+          content: [{ type: "text", text: formatAgentList(discoverAgents()) }],
+          details: {},
+        };
+      }
+
+      // TS-003 注释替换 (ISSUE-06): action:"resume" 不经执行模式校验层 (调和 #6: agent 忽略/仅 id+task 必填),
+      // 直接分发 runResume (寻址/校验/恢复 spawn/结果标记均在 resume.ts; 锁/GC 见 TS-002/TS-003).
+      if (params?.action === "resume") {
+        return runResume(params, _ctx, _signal, onUpdate);
+      }
+      const agents = discoverAgents();
+      const validationError = validateExecuteParams(params, agents);
+      if (validationError) {
+        return { content: [{ type: "text", text: validationError }], details: {}, isError: true };
+      }
+
+      // ISSUE-05: 并行/single 共用 cwd 与 getContextUsage (ISSUE-03 诊断数据源, M3-05).
+      const cwd = typeof params?.cwd === "string" && params.cwd !== "" ? params.cwd : _ctx.cwd;
+      const getContextUsage = typeof (_ctx as { getContextUsage?: unknown }).getContextUsage === "function"
+        ? () => ((_ctx as { getContextUsage: () => { tokens: number | null; contextWindow: number; percent: number | null } | undefined }).getContextUsage())
+        : undefined;
+
+      // ISSUE-05: tasks[] 并行分支 (M2-D004/M2-D008; per-child 未知 agent 走独立失败, 不阻塞整批).
+      if (Array.isArray(params?.tasks) && (params.tasks as unknown[]).length > 0) {
+        return runParallelTasks(params, agents, cwd, _signal, getContextUsage, onUpdate);
+      }
+      // 校验层已保证 agent 存在 (缺 agent/未知 agent 均已在 validateExecuteParams 拦截), 此处 find 必命中.
+      const agent = agents.find((a) => a.name === (params?.agent as string))!;
+      const task = typeof params?.task === "string" ? params.task : "";
+      const model = typeof params?.model === "string" && params.model !== "" ? params.model : undefined;
+      // ISSUE-03: timeoutMs 参数提取 — 原始数值透传 (0/负数/NaN/非整数由 runSingleAgent 校验层统一兜底报错,
+      // 修复前被此处 >0 过滤成 undefined 静默按默认 15min 跑, 校验层不可达) + ctx.getContextUsage 注入.
+      const timeoutMs = typeof params?.timeoutMs === "number" ? params.timeoutMs : undefined;
+      // ISSUE-04: usageBudget 原始值透传 (纯 number 正数由 runSingleAgent 校验层统一兜底报错, 不在此过滤 —
+      // 过滤会掩盖 0/负数/NaN/非 number 等非法值, 校验层不可达).
+      const usageBudget = params?.usageBudget as number | undefined;
+      // TS-004: 取消监听 (AbortSignal) 透传 — abort → SIGTERM → 3s SIGKILL (M3-01 考察点 4);
+      // 本切片: onUpdate 透传 (M3-02 考察点 6 触发点/payload 见 single.ts).
+      return runSingleAgent({ agent, task, model, cwd, timeoutMs, usageBudget, getContextUsage, signal: _signal, onUpdate });
+    },
+    // ISSUE-07: TUI 最小渲染 (M1-D001(9)) — renderCall 摘要 + renderResult 折叠/展开 + usage 统计.
+    renderCall(args, theme) {
+      return renderCallComponent(args as { agent?: unknown; task?: unknown; tasks?: unknown[] }, theme);
+    },
+    renderResult(result, { expanded }, theme) {
+      const details = result.details as { mode?: string; results?: ParallelChildResult[]; usage?: Usage; exitCode?: number; stopReason?: string; errorMessage?: string; model?: string } | undefined;
+      if (details?.mode === "parallel" && Array.isArray(details.results)) return renderParallelComponent(details.results, expanded, theme); // parallel 每任务分块
+      // single/默认 (final details = SingleDetails 无 agent; 流式 partial 同走 content 文本).
+      const text = (result.content[0] as { type?: string; text?: string } | undefined)?.type === "text" ? (result.content[0] as { text: string }).text : "(no output)";
+      const isError = result.isError === true || (typeof details?.exitCode === "number" && details.exitCode !== 0);
+      return renderSingleComponent({ agent: "subagent", isError, stopReason: details?.stopReason, errorMessage: details?.errorMessage, output: text, usage: details?.usage, model: details?.model }, expanded, theme);
+    },
+  });
+}

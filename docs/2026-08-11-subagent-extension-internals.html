@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pi subagent 扩展实现拆解</title>
+<style>
+  :root {
+    --ink: #2f3b33;
+    --ink-soft: #5d6b60;
+    --ink-faint: #8a948c;
+    --paper: #faf7f0;
+    --accent: #8a6f4d;
+    --accent-soft: #c9b594;
+    --line: #b9b3a5;
+    --green: #5f7d5c;
+    --blue: #6b7f96;
+    --red: #a05c4e;
+    --amber: #b08a3e;
+    --code-bg: #f3efe4;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Source Han Serif SC", "Noto Serif CJK SC", "Songti SC", "SimSun", "Spectral", "Georgia", serif;
+    font-size: 17px;
+    line-height: 1.75;
+  }
+  .page { max-width: 880px; margin: 0 auto; padding: 48px 28px 120px; }
+
+  /* ---------- hand-drawn decorative lines ---------- */
+  .scribble {
+    position: relative;
+    height: 14px;
+    opacity: 0.55;
+  }
+  .scribble svg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+  .scribble.small { height: 9px; }
+
+  header { padding-top: 40px; }
+  .kicker {
+    letter-spacing: 0.35em;
+    font-size: 13px;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+  }
+  h1 {
+    font-size: 38px;
+    font-weight: 600;
+    margin: 18px 0 8px;
+    letter-spacing: 0.02em;
+    line-height: 1.3;
+  }
+  .subtitle {
+    font-size: 17px;
+    color: var(--ink-soft);
+    margin: 0 0 28px;
+  }
+
+  h2 {
+    font-size: 25px;
+    font-weight: 600;
+    margin: 72px 0 14px;
+    letter-spacing: 0.03em;
+  }
+  h3 { font-size: 19px; font-weight: 600; margin: 36px 0 10px; }
+  p { margin: 12px 0; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px dotted var(--accent-soft); }
+  a:hover { border-bottom-style: solid; }
+  code, pre { font-family: "JetBrains Mono", "Fira Code", ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  code { font-size: 0.86em; background: var(--code-bg); padding: 1px 5px; border-radius: 3px; }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid #e4ddcc;
+    border-radius: 6px;
+    padding: 14px 16px;
+    font-size: 13.5px;
+    line-height: 1.6;
+    overflow-x: auto;
+    white-space: pre;
+  }
+  pre code { background: none; padding: 0; }
+
+  /* ---------- TOC ---------- */
+  .toc {
+    margin: 40px 0 0;
+    padding: 22px 28px;
+    border-left: 2px solid var(--accent-soft);
+    background: rgba(201,181,148,0.08);
+  }
+  .toc h2 { margin: 0 0 10px; font-size: 15px; letter-spacing: 0.2em; color: var(--ink-faint); text-transform: uppercase; }
+  .toc ol { margin: 0; padding-left: 22px; }
+  .toc li { margin: 5px 0; }
+  .toc a { color: var(--ink-soft); border-bottom: none; }
+  .toc a:hover { color: var(--accent); }
+
+  /* ---------- callout ---------- */
+  .callout {
+    margin: 24px 0;
+    padding: 14px 20px;
+    border-left: 3px solid var(--accent);
+    background: rgba(138,111,77,0.07);
+    font-size: 15.5px;
+  }
+  .callout .tag {
+    display: block;
+    font-size: 12px;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 4px;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+  }
+
+  /* ---------- figures ---------- */
+  figure { margin: 32px 0; text-align: center; }
+  figcaption {
+    font-size: 13.5px;
+    color: var(--ink-faint);
+    margin-top: 10px;
+    font-style: italic;
+  }
+  svg text { font-family: inherit; }
+
+  /* ---------- tables ---------- */
+  table { border-collapse: collapse; width: 100%; margin: 22px 0; font-size: 14.5px; }
+  th, td { border-bottom: 1px solid #ddd6c4; padding: 9px 12px; text-align: left; vertical-align: top; }
+  th { color: var(--ink-soft); font-weight: 600; letter-spacing: 0.05em; font-size: 13px; text-transform: uppercase; }
+  tr:last-child td { border-bottom: none; }
+
+  /* ---------- mode cards ---------- */
+  .mode-row { display: flex; gap: 20px; margin: 28px 0; flex-wrap: wrap; }
+  .mode {
+    flex: 1 1 240px;
+    border-top: 2px solid var(--line);
+    padding: 14px 4px 4px;
+  }
+  .mode h3 { margin: 0 0 8px; font-size: 17px; }
+  .mode .mode-role { font-size: 13px; color: var(--ink-faint); letter-spacing: 0.1em; margin-bottom: 10px; }
+  .mode p { font-size: 14.5px; color: var(--ink-soft); margin: 6px 0; }
+  .mode .shape { margin: 10px auto 0; display: block; }
+
+  /* ---------- interactive ---------- */
+  details {
+    margin: 18px 0;
+    border: 1px solid #e0d9c8;
+    border-radius: 6px;
+    background: #fffdf7;
+  }
+  summary {
+    cursor: pointer;
+    padding: 12px 18px;
+    font-weight: 600;
+    font-size: 15.5px;
+    color: var(--accent);
+    outline-offset: -2px;
+    list-style: none;
+  }
+  summary::before { content: "+ "; color: var(--accent-soft); }
+  details[open] summary::before { content: "– "; }
+  details .inner { padding: 2px 20px 16px; }
+
+  .footnote { font-size: 13px; color: var(--ink-faint); margin-top: 60px; }
+  @media (max-width: 640px) {
+    body { font-size: 15.5px; }
+    h1 { font-size: 28px; }
+    h2 { font-size: 21px; }
+    .page { padding: 24px 18px 80px; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <div class="kicker">pi Coding Agent · Extension Deep Dive</div>
+  <h1>subagent 扩展的实现拆解</h1>
+  <p class="subtitle">把任务委派给隔离上下文的子 agent —— 一个 800 行的 TypeScript 扩展是如何做到的</p>
+  <div class="scribble">
+    <svg viewBox="0 0 800 14" preserveAspectRatio="none" aria-hidden="true">
+      <path d="M0 8 Q 40 2 80 7 T 160 6 T 240 8 T 320 5 T 400 8 T 480 6 T 560 8 T 640 5 T 720 8 T 800 6" fill="none" stroke="#b9b3a5" stroke-width="1.6"/>
+    </svg>
+  </div>
+  <nav class="toc">
+    <h2>目录</h2>
+    <ol>
+      <li><a href="#idea">核心思想: 进程即上下文隔离</a></li>
+      <li><a href="#protocol">子进程协议: JSON 行事件流</a></li>
+      <li><a href="#agents">Agent 定义与发现</a></li>
+      <li><a href="#modes">三种执行模式</a></li>
+      <li><a href="#display">TUI 渲染与用量统计</a></li>
+      <li><a href="#workflows">工作流: prompt 模板编排</a></li>
+      <li><a href="#boundaries">边界与安全模型</a></li>
+    </ol>
+  </nav>
+</header>
+
+<!-- ================= 1. 核心思想 ================= -->
+<h2 id="idea">1. 核心思想: 进程即上下文隔离</h2>
+<p>
+示例的全部设计都围绕一个决定: <strong>每个子 agent 是一个独立的 <code>pi</code> 进程</strong>.
+不试图在主进程内做上下文管理, 而是直接复用 pi 自身的运行时. 主 agent 通过扩展工具 <code>subagent</code> 发起调用,
+扩展负责 spawn 子进程, 监听其输出, 再把结果带回主会话.
+</p>
+<figure>
+  <svg viewBox="0 0 760 210" width="100%" role="img" aria-label="主进程派生多个子进程示意图">
+    <!-- parent -->
+    <g stroke="#8a6f4d" fill="none" stroke-width="1.6">
+      <rect x="30" y="70" width="170" height="70" rx="8"/>
+      <path d="M270 105 H 330 M 330 105 C 350 105 350 60 380 55" />
+      <path d="M330 105 C 350 105 350 150 380 155" />
+      <path d="M330 105 C 350 105 350 105 380 105" />
+    </g>
+    <text x="115" y="97" text-anchor="middle" fill="#2f3b33" font-size="15">主 pi 会话</text>
+    <text x="115" y="118" text-anchor="middle" fill="#8a948c" font-size="12">注册了 subagent 工具</text>
+    <!-- children -->
+    <g stroke="#5f7d5c" fill="none" stroke-width="1.6">
+      <rect x="390" y="30" width="150" height="50" rx="8"/>
+      <rect x="390" y="80" width="150" height="50" rx="8"/>
+      <rect x="390" y="130" width="150" height="50" rx="8"/>
+    </g>
+    <text x="465" y="60" text-anchor="middle" fill="#2f3b33" font-size="13">pi --mode json</text>
+    <text x="465" y="110" text-anchor="middle" fill="#2f3b33" font-size="13">pi --mode json</text>
+    <text x="465" y="160" text-anchor="middle" fill="#2f3b33" font-size="13">pi --mode json</text>
+    <!-- annotations -->
+    <text x="585" y="58" fill="#5f7d5c" font-size="12">隔离上下文窗口</text>
+    <text x="585" y="108" fill="#5f7d5c" font-size="12">独立 system prompt</text>
+    <text x="585" y="158" fill="#5f7d5c" font-size="12">可指定 model / tools</text>
+    <!-- dashed partition -->
+    <line x1="28" y1="30" x2="28" y2="185" stroke="#b9b3a5" stroke-width="1" stroke-dasharray="4 4"/>
+    <text x="28" y="22" fill="#8a948c" font-size="11" transform="rotate(-90 28 22)"></text>
+    <text x="240" y="200" fill="#8a948c" font-size="12">spawn() 每个任务一个进程, 主进程不共享任何内存</text>
+  </svg>
+  <figcaption>图 1 — 隔离模型: 上下文隔离靠进程边界实现, 而不是库内抽象</figcaption>
+</figure>
+<p>
+关键命令行参数 (见 <code>runSingleAgent</code>):
+</p>
+<table>
+  <tr><th>参数</th><th>作用</th></tr>
+  <tr><td><code>--mode json</code></td><td>子进程以 JSON 流模式运行, 把事件逐行写到 stdout, 供父进程解析</td></tr>
+  <tr><td><code>-p</code></td><td>打印输出 (print), 事件流中包含模型消息</td></tr>
+  <tr><td><code>--no-session</code></td><td>不写会话文件, 无状态一次性运行</td></tr>
+  <tr><td><code>--model &lt;name&gt;</code></td><td>来自 agent 定义 frontmatter, 例如 Haiku 做侦察, Sonnet 做规划</td></tr>
+  <tr><td><code>--tools &lt;list&gt;</code></td><td>限制子 agent 可用的工具白名单</td></tr>
+  <tr><td><code>--append-system-prompt &lt;file&gt;</code></td><td>把 agent 的 system prompt 从临时文件注入 (见 §3)</td></tr>
+</table>
+
+<div class="callout">
+  <span class="tag">设计要点</span>
+  system prompt 通过 <em>临时文件</em> 传递而非命令行参数: 因为 prompt 可能很长, 且含换行与特殊字符.
+  扩展用 <code>mkdtemp</code> 创建目录, 以 <code>0600</code> 权限写入, 进程结束后在 <code>finally</code> 中删除文件与目录.
+</div>
+
+<!-- ================= 2. 子进程协议 ================= -->
+<h2 id="protocol">2. 子进程协议: JSON 行事件流</h2>
+<p>
+父进程 <code>spawn</code> 子进程后, 从 stdout 逐块读取数据, 按换行切分成 <strong>JSON 行</strong>.
+每一行是一个事件. 扩展只关心两类事件:
+</p>
+<ul>
+  <li><code>message_end</code> — 模型完成一条消息 (含 usage 统计, stopReason, model 名)</li>
+  <li><code>tool_result_end</code> — 工具调用完成</li>
+</ul>
+<figure>
+  <svg viewBox="0 0 760 150" width="100%" role="img" aria-label="JSON 事件流管道">
+    <g stroke="#6b7f96" fill="none" stroke-width="1.6">
+      <rect x="20" y="55" width="150" height="45" rx="8"/>
+      <rect x="600" y="55" width="140" height="45" rx="8"/>
+    </g>
+    <text x="95" y="81" text-anchor="middle" fill="#2f3b33" font-size="13">子进程 stdout</text>
+    <text x="670" y="81" text-anchor="middle" fill="#2f3b33" font-size="13">SingleResult[]</text>
+    <g stroke="#8a6f4d" fill="none" stroke-width="1.6">
+      <path d="M170 77 C 230 77 230 45 300 45 L 400 45 C 430 45 430 77 460 77 C 490 77 490 109 560 109 L 590 109"/>
+      <path d="M170 77 C 230 77 230 109 300 109 L 400 109 C 430 109 430 77 460 77"/>
+    </g>
+    <text x="315" y="38" text-anchor="middle" fill="#8a948c" font-size="11">buffer 按 \n 切行</text>
+    <text x="320" y="122" text-anchor="middle" fill="#8a948c" font-size="11">JSON.parse 失败的行直接丢弃</text>
+    <text x="505" y="75" text-anchor="middle" fill="#8a948c" font-size="11">累计消息/用量</text>
+    <text x="505" y="105" text-anchor="middle" fill="#8a948c" font-size="11">onUpdate 推流</text>
+  </svg>
+  <figcaption>图 2 — 数据管道: 字节流 → 行 → 事件 → 结构化结果</figcaption>
+</figure>
+<p>缓冲区处理必须处理半行: 数据块可能在行中间断开, 所以用 <code>buffer += chunk</code>, 按 <code>\n</code> 切分, 最后一段留在 buffer 里, 等 <code>close</code> 事件时再处理残余. 实际收到的事件流形如:</p>
+<pre><code>{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"## Files Retrieved\n1. ..."}],"usage":{"input":1234,"output":56,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.002},"totalTokens":1290},"model":"claude-haiku-4-5"}}
+{"type":"tool_result_end","message":{"role":"tool","toolName":"grep","content":[...]}}
+{"type":"message_end","message":{"role":"assistant","content":[...],"stopReason":"end",...}}</code></pre>
+<p>
+对每条 <code>message_end</code>, 扩展累计 turns, 把 <code>usage.input / output / cacheRead / cacheWrite / cost / totalTokens</code> 累加进结果对象,
+并记录 model 名和 <code>stopReason</code>. 这就是后来 TUI 里 <code>3 turns ↑1.2k ↓56 $0.002 ctx:1290</code> 那行统计的来源.
+</p>
+
+<div class="callout">
+  <span class="tag">细节</span>
+  <code>stopReason === "error"</code> 表示 LLM 层错误, <code>"aborted"</code> 表示用户 Ctrl+C.
+  此时 <code>isFailedResult</code> 判定失败, 错误信息从 <code>errorMessage</code> / stderr / 最后一条输出中选取回传.
+</div>
+
+<!-- ================= 3. Agent 定义与发现 ================= -->
+<h2 id="agents">3. Agent 定义与发现</h2>
+<p>
+Agent 是带 YAML frontmatter 的 Markdown 文件, 正文就是 system prompt.
+<code>agents.ts</code> 里的 <code>discoverAgents</code> 在每次工具调用时 <em>重新扫描</em> 目录 (README 明确说: 允许会话中途编辑 agent 定义).
+</p>
+<pre><code>---
+name: scout
+description: Fast codebase recon that returns compressed context for handoff
+tools: read, grep, find, ls, bash
+model: claude-haiku-4-5
+---
+
+You are a scout. Quickly investigate a codebase and return structured findings
+that another agent can use without re-reading everything.
+
+Your output will be passed to an agent who has NOT seen the files you explored.
+...</code></pre>
+<p>发现逻辑有三层规则:</p>
+<ol>
+  <li><strong>扫描两个来源</strong>: 用户级 <code>~/.pi/agent/agents/</code> 与项目级 <code>.pi/agents/</code> (从 cwd 向上逐级找最近的 <code>.pi</code> 目录)</li>
+  <li><strong>按 scope 过滤</strong>: 默认 <code>user</code>; <code>both</code> 时同名项目 agent 覆盖用户 agent (Map 后写胜出)</li>
+  <li><strong>缺失字段直接跳过</strong>: 没有 <code>name</code> 或 <code>description</code> 的文件不视为 agent</li>
+</ol>
+<p>
+工具白名单解析自 <code>tools</code> 逗号分隔串, 传给子进程的 <code>--tools</code>;
+模型同理传给 <code>--model</code>. worker 不写 <code>tools</code>, 因此拥有全部默认工具.
+</p>
+
+<div class="callout">
+  <span class="tag">安全模型</span>
+  项目级 agent 是仓库控制的 prompt, 可以指示模型读文件/跑命令.
+  因此默认只加载用户级 agent; 只有显式传 <code>agentScope: "both"</code> 或 <code>"project"</code> 才加载项目级.
+  交互模式下 (检测 <code>ctx.hasUI</code>), 请求项目级 agent 前会弹确认框, 列出 agent 名与来源目录.
+</div>
+
+<!-- ================= 4. 三种执行模式 ================= -->
+<h2 id="modes">4. 三种执行模式</h2>
+<p>
+工具的 JSON Schema 参数 (用 TypeBox 定义) 保证三种模式互斥: 同时给出 <code>agent+task</code>, <code>tasks</code>, <code>chain</code> 中的多个即报错.
+</p>
+<div class="mode-row">
+  <div class="mode">
+    <h3>Single</h3>
+    <div class="mode-role">{ agent, task }</div>
+    <p>一次调用, 一个进程. 结果直接返回, <code>onUpdate</code> 实时推流.</p>
+    <svg class="shape" viewBox="0 0 180 46" width="180" aria-hidden="true">
+      <g stroke="#8a6f4d" fill="none" stroke-width="1.5">
+        <rect x="10" y="10" width="60" height="26" rx="6"/>
+        <path d="M70 23 H 110 L 100 16 M 110 23 L 100 30"/>
+      </g>
+      <rect x="120" y="10" width="50" height="26" rx="6" fill="#f3efe4" stroke="#5f7d5c" stroke-width="1.5"/>
+      <text x="145" y="28" text-anchor="middle" fill="#5f7d5c" font-size="10">agent</text>
+    </svg>
+  </div>
+  <div class="mode">
+    <h3>Parallel</h3>
+    <div class="mode-role">{ tasks: [...] }</div>
+    <p>最多 8 个任务, 4 并发 (<code>MAX_CONCURRENCY</code>). 每个任务流式更新自己的槽位.</p>
+    <svg class="shape" viewBox="0 0 180 46" width="180" aria-hidden="true">
+      <g stroke="#8a6f4d" fill="none" stroke-width="1.5">
+        <path d="M10 23 H 30 M 70 23 H 90"/>
+      </g>
+      <g stroke="#5f7d5c" fill="none" stroke-width="1.5">
+        <rect x="30" y="8" width="40" height="15" rx="5"/>
+        <rect x="30" y="23" width="40" height="15" rx="5"/>
+        <rect x="30" y="38" width="40" height="0"/>
+        <rect x="90" y="8" width="40" height="15" rx="5"/>
+        <rect x="90" y="23" width="40" height="15" rx="5"/>
+      </g>
+    </svg>
+  </div>
+  <div class="mode">
+    <h3>Chain</h3>
+    <div class="mode-role">{ chain: [...] }</div>
+    <p>顺序执行, 上一步最终输出替换下一步任务里的 <code>{previous}</code> 占位符. 任一步失败即停止.</p>
+    <svg class="shape" viewBox="0 0 180 46" width="180" aria-hidden="true">
+      <g stroke="#8a6f4d" fill="none" stroke-width="1.5">
+        <rect x="5" y="15" width="40" height="18" rx="6"/>
+        <path d="M45 24 H 62 L 55 18 M 62 24 L 55 30"/>
+        <rect x="70" y="15" width="40" height="18" rx="6"/>
+        <path d="M110 24 H 127 L 120 18 M 127 24 L 120 30"/>
+        <rect x="135" y="15" width="40" height="18" rx="6"/>
+      </g>
+      <text x="25" y="34" text-anchor="middle" fill="#8a948c" font-size="9">{prev}</text>
+      <text x="90" y="34" text-anchor="middle" fill="#8a948c" font-size="9">{prev}</text>
+    </svg>
+  </div>
+</div>
+
+<h3>Chain 的 <code>{previous}</code> 机制</h3>
+<p>
+最简单也最关键的编排原语: <code>step.task.replace(/\{previous\}/g, previousOutput)</code>.
+<code>previousOutput</code> 是前一步消息里 <em>最后一条 assistant 文本</em> (<code>getFinalOutput</code> 从后往前找).
+失败时返回 <code>Chain stopped at step N (agent): 错误信息</code> 并标记 <code>isError: true</code>.
+</p>
+
+<h3>Parallel 的并发限流</h3>
+<p>
+<code>mapWithConcurrencyLimit</code> 是个经典 worker 池: 固定 <code>limit</code> 个并发 worker, 用共享计数器 <code>nextIndex++</code> 取任务, 结果按原索引写入数组.
+并发调用各任务前先填充 <code>exitCode: -1</code> 的占位结果, 这样 TUI 可以立刻显示所有任务的 ⏳ 状态.
+</p>
+<pre><code>const workers = new Array(limit).fill(null).map(async () => {
+  while (true) {
+    const current = nextIndex++;          // 原子取下一个任务
+    if (current &gt;= items.length) return;  // 任务耗尽
+    results[current] = await fn(items[current], current);
+  }
+});
+await Promise.all(workers);</code></pre>
+
+<div class="callout">
+  <span class="tag">输出上限</span>
+  并行模式回传给主模型的文本每个任务截断到 50 KB (<code>PER_TASK_OUTPUT_CAP</code>),
+  按 UTF-8 字节数计算, 截断时逐字节回退保证不切坏多字节字符, 并注明省略了多少字节;
+  完整结果保留在工具 details 里.
+</div>
+
+<!-- ================= 5. TUI 渲染 ================= -->
+<h2 id="display">5. TUI 渲染与用量统计</h2>
+<p>
+扩展实现了 <code>renderCall</code> (调用时) 与 <code>renderResult</code> (结果时) 两个渲染器.
+调用时只显示一行摘要; 结果时根据 <code>expanded</code> 标志 (Ctrl+O) 切换两种视图:
+</p>
+<table>
+  <tr><th></th><th>折叠视图 (默认)</th><th>展开视图 (Ctrl+O)</th></tr>
+  <tr><td>任务文本</td><td>不显示</td><td>完整显示</td></tr>
+  <tr><td>工具调用</td><td>最后 10 条, 单行格式化</td><td>全部, 逐条</td></tr>
+  <tr><td>最终输出</td><td>前 3 行预览</td><td>Markdown 渲染 (<code>Markdown</code> 组件)</td></tr>
+  <tr><td>用量</td><td>一行汇总</td><td>逐 agent + Total 合计</td></tr>
+</table>
+<p>
+工具调用格式化为模拟内置工具的样式, 路径缩短为 <code>~</code>, 命令截断到 60 字符:
+</p>
+<pre><code>✓ scout (user)
+  $ grep -rn "auth" src/ ...
+  read ~/project/src/auth.ts:1-40
+  3 turns ↑1.2k ↓56 R0 W0 $0.0023 ctx:1290 claude-haiku-4-5</code></pre>
+<p>
+流式更新 (streaming) 贯穿所有模式: <code>onUpdate</code> 回调在每个 <code>message_end</code> / <code>tool_result_end</code> 触发,
+parallel 模式用一个共享数组让每个任务独立更新自己的槽位, 渲染器据此实时显示 <code>2/3 done, 1 running</code>.
+</p>
+<p>
+用量统计的另一个作用: <code>formatUsageStats</code> 用 1k/1M 缩写, 成本精确到 4 位小数 —
+这给了用户可审计的每步成本, 是链式工作流落地时最实用的反馈.
+</p>
+
+<!-- ================= 6. 工作流 ================= -->
+<h2 id="workflows">6. 工作流: prompt 模板编排</h2>
+<p>
+Agent 是能力单元 (侦察/规划/实现/审查), 而 <code>prompts/</code> 里的模板是 <em>流程剧本</em>:
+它们不写代码, 只指导主模型如何用 subagent 工具按序组合 agent. 模板里的 <code>$@</code> 会被用户输入替换.
+</p>
+<figure>
+  <svg viewBox="0 0 760 250" width="100%" role="img" aria-label="三个工作流流程图">
+    <!-- implement -->
+    <text x="30" y="24" fill="#8a6f4d" font-size="13" font-weight="600">/implement</text>
+    <g stroke="#5f7d5c" fill="none" stroke-width="1.5">
+      <rect x="30" y="40" width="130" height="34" rx="7"/>
+      <rect x="230" y="40" width="130" height="34" rx="7"/>
+      <rect x="430" y="40" width="130" height="34" rx="7"/>
+    </g>
+    <g stroke="#8a6f4d" fill="none" stroke-width="1.5">
+      <path d="M160 57 H 190 L 182 50 M 190 57 L 182 64"/>
+      <path d="M360 57 H 390 L 382 50 M 390 57 L 382 64"/>
+    </g>
+    <text x="95" y="62" text-anchor="middle" fill="#2f3b33" font-size="12">scout 侦察</text>
+    <text x="295" y="62" text-anchor="middle" fill="#2f3b33" font-size="12">planner 规划</text>
+    <text x="495" y="62" text-anchor="middle" fill="#2f3b33" font-size="12">worker 实现</text>
+    <text x="580" y="62" fill="#8a948c" font-size="11">→ 输出给用户</text>
+    <text x="30" y="94" fill="#8a948c" font-size="11">Haiku 快查 → Sonnet 出计划 → Sonnet 照单执行</text>
+
+    <!-- scout-and-plan -->
+    <text x="30" y="134" fill="#8a6f4d" font-size="13" font-weight="600">/scout-and-plan</text>
+    <g stroke="#5f7d5c" fill="none" stroke-width="1.5">
+      <rect x="30" y="150" width="130" height="34" rx="7"/>
+      <rect x="230" y="150" width="130" height="34" rx="7"/>
+    </g>
+    <g stroke="#8a6f4d" fill="none" stroke-width="1.5">
+      <path d="M160 167 H 190 L 182 160 M 190 167 L 182 174"/>
+    </g>
+    <text x="95" y="172" text-anchor="middle" fill="#2f3b33" font-size="12">scout 侦察</text>
+    <text x="295" y="172" text-anchor="middle" fill="#2f3b33" font-size="12">planner 规划</text>
+    <text x="400" y="172" fill="#8a948c" font-size="11">→ 停在计划, 不实现</text>
+
+    <!-- implement-and-review -->
+    <text x="30" y="216" fill="#8a6f4d" font-size="13" font-weight="600">/implement-and-review</text>
+    <g stroke="#5f7d5c" fill="none" stroke-width="1.5">
+      <rect x="30" y="222" width="130" height="34" rx="7"/>
+      <rect x="230" y="222" width="130" height="34" rx="7"/>
+      <rect x="430" y="222" width="130" height="34" rx="7"/>
+    </g>
+    <g stroke="#8a6f4d" fill="none" stroke-width="1.5">
+      <path d="M160 239 H 190 L 182 232 M 190 239 L 182 246"/>
+      <path d="M360 239 H 390 L 382 232 M 390 239 L 382 246"/>
+    </g>
+    <text x="95" y="244" text-anchor="middle" fill="#2f3b33" font-size="12">worker 实现</text>
+    <text x="295" y="244" text-anchor="middle" fill="#2f3b33" font-size="12">reviewer 审查</text>
+    <text x="495" y="244" text-anchor="middle" fill="#2f3b33" font-size="12">worker 改</text>
+  </svg>
+  <figcaption>图 3 — 三个工作流模板, 同一套链式机制的不同组合</figcaption>
+</figure>
+<p>
+四个示例 agent 展示了角色分工的价值:
+</p>
+<table>
+  <tr><th>Agent</th><th>模型</th><th>工具</th><th>产出约定</th></tr>
+  <tr><td>scout</td><td>Haiku (快, 便宜)</td><td>read, grep, find, ls, bash</td><td>Files Retrieved (带行号) / Key Code / Architecture / Start Here</td></tr>
+  <tr><td>planner</td><td>Sonnet</td><td>read, grep, find, ls</td><td>Goal / Plan / Files to Modify / Risks, 禁止改动</td></tr>
+  <tr><td>worker</td><td>Sonnet</td><td>全部</td><td>Completed / Files Changed / Notes, 交接给 reviewer 时给路径清单</td></tr>
+  <tr><td>reviewer</td><td>Sonnet</td><td>read, grep, find, ls, bash</td><td>Files Reviewed / Critical / Warnings / Suggestions, bash 只读</td></tr>
+</table>
+<div class="callout">
+  <span class="tag">值得注意</span>
+  scout 的 prompt 专门写了 "Your output will be passed to an agent who has NOT seen the files you explored" —
+  这正是链式交接的关键: 输出必须自包含, 下游 agent 无法回看上游的上下文.
+</div>
+
+<!-- ================= 7. 边界 ================= -->
+<h2 id="boundaries">7. 边界与安全模型</h2>
+<p>示例也明确列出自己的局限, 是值得模仿的诚实做法:</p>
+<ul>
+  <li>并行输出回传上限 50 KB/任务, 折叠视图只显示最后 10 条</li>
+  <li>每 8 个并行任务 / 4 并发封顶</li>
+  <li>agent 每次调用重新发现, 意味着可以热编辑</li>
+</ul>
+<p>失败处理是完整的:</p>
+<table>
+  <tr><th>情形</th><th>行为</th></tr>
+  <tr><td>退出码 ≠ 0</td><td>返回错误, 附带 stderr/输出</td></tr>
+  <tr><td><code>stopReason: "error"</code></td><td>透传 LLM 错误消息</td></tr>
+  <tr><td>用户 Ctrl+C</td><td><code>SIGTERM</code> 先给子进程, 5 秒后仍不退出则 <code>SIGKILL</code>, 全程经 AbortSignal 传播</td></tr>
+  <tr><td>chain 中途失败</td><td>停止并报告第几步哪个 agent 失败</td></tr>
+  <tr><td>未知 agent 名</td><td>退出码 1, 列出可用 agent</td></tr>
+</table>
+<p>
+最后回看整体: 这个示例没有发明任何新的 agent 运行时, 它做的是 <em>管道工</em> 的工作 —
+spawn 进程, 解析事件流, 按模板编排, 渲染进度. 所有智能都来自 pi 自身和精心撰写的 prompt.
+它证明了扩展生态最有效的位置: <strong>连接与编排, 而非重复实现</strong>.
+</p>
+
+<p class="footnote">示例路径: examples/extensions/subagent/ — index.ts (~700 行), agents.ts, agents/ (4 个), prompts/ (3 个). 安装方式为符号链接到 ~/.pi/agent/{extensions,agents,prompts}.</p>
+
+</div>
+
+<script>
+window.__PRESENTATION_STATE__ = {
+  version: 1,
+  values: {}
+};
+</script>
+</body>
+</html>

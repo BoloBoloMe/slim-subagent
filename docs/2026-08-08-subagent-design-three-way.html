@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>同一味药, 三种配方 — Claude Code, Codex 与 pi-subagents 的子代理设计</title>
+<style>
+  :root{
+    --paper:#f6f1e7;
+    --ink:#2b2a26;
+    --muted:#847c6c;
+    --line:#c9beab;
+    --claude:#a05c3b;      /* 赭石: Claude Code */
+    --claude-soft:#e8d8cb;
+    --codex:#5d7a63;       /* 灰绿: Codex */
+    --codex-soft:#d9e0d5;
+    --pi:#5f748a;          /* 灰蓝: pi-subagents */
+    --pi-soft:#d6dde5;
+    --gold:#b08d4f;
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'Spectral','Noto Serif SC','Source Han Serif SC','Songti SC',serif;
+    line-height:1.85;
+    margin:0;
+    padding:0 0 18vh 0;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:760px;margin:0 auto;padding:0 6vw;}
+  @media (min-width:900px){ .wrap{padding:0 2vw;} }
+
+  header.hero{padding:11vh 0 6vh 0;}
+  .kicker{
+    font-family:'Spectral',serif;font-style:italic;
+    letter-spacing:.24em;font-size:.82rem;color:var(--muted);
+    text-transform:lowercase;margin-bottom:2.2vh;
+  }
+  h1{
+    font-weight:600;font-size:clamp(1.6rem,4.6vw,2.3rem);
+    line-height:1.5;letter-spacing:.04em;margin:0 0 2.5vh 0;
+  }
+  .lede{font-size:1.02rem;color:#4a463d;max-width:62ch;}
+  .lede em{font-style:normal;border-bottom:1px solid var(--line);}
+
+  nav.toc{margin:5vh 0 0 0;font-size:.95rem;}
+  nav.toc .toc-title{
+    font-family:'Spectral',serif;font-style:italic;color:var(--muted);
+    letter-spacing:.18em;font-size:.8rem;margin-bottom:1vh;
+  }
+  nav.toc ol{list-style:none;margin:0;padding:0;}
+  nav.toc li{margin:.35em 0;}
+  nav.toc a{
+    color:var(--ink);text-decoration:none;
+    border-bottom:1px dashed var(--line);
+  }
+  nav.toc a:hover,nav.toc a:focus-visible{border-bottom-color:var(--ink);}
+  nav.toc .no{font-family:'Spectral',serif;font-style:italic;color:var(--muted);margin-right:.7em;}
+
+  section{margin:11vh 0 0 0;}
+  h2{
+    font-weight:600;font-size:1.32rem;letter-spacing:.06em;
+    margin:0 0 .4em 0;
+  }
+  h2 .no{font-family:'Spectral',serif;font-style:italic;color:var(--muted);font-weight:400;margin-right:.6em;}
+  .h2-under{display:block;width:190px;height:10px;color:var(--line);margin-bottom:3.5vh;}
+  h3{font-size:1.08rem;font-weight:600;letter-spacing:.05em;margin:6vh 0 1vh 0;}
+  p{margin:.9em 0;}
+  .goal{font-family:'Spectral',serif;font-style:italic;color:var(--muted);font-size:.92rem;margin:-.5em 0 1.6em 0;}
+
+  /* 三方标签: 颜色 + 形状 + 文字三重区分 */
+  .badge{
+    display:inline-block;font-size:.72rem;letter-spacing:.14em;
+    padding:.1em .7em .15em;border-radius:999px;vertical-align:.12em;
+    border:1px solid currentColor;white-space:nowrap;
+  }
+  .badge.claude{color:var(--claude);}
+  .badge.codex{color:var(--codex);}
+  .badge.pi{color:var(--pi);}
+  .badge.claude::before{content:"● ";}
+  .badge.codex::before{content:"■ ";}
+  .badge.pi::before{content:"▲ ";}
+
+  /* 旁白框: 手绘波浪左边线, 不用方框卡片 */
+  aside.callout{
+    margin:3.5vh 0;padding:.2em 0 .2em 1.2em;
+    border-left:2px solid var(--gold);
+    border-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='30'%3E%3Cpath d='M2 0 Q3.5 7 2 15 Q0.5 22 2 30' stroke='%23b08d4f' fill='none' stroke-width='2'/%3E%3C/svg%3E") 0 2 repeat;
+    font-size:.95rem;color:#4a463d;
+  }
+  aside.callout .ct{font-family:'Spectral',serif;font-style:italic;letter-spacing:.14em;font-size:.78rem;color:var(--gold);display:block;margin-bottom:.3em;}
+
+  figure{margin:4.5vh 0;}
+  figure svg{width:100%;height:auto;display:block;}
+  figcaption{font-size:.85rem;color:var(--muted);margin-top:1.2vh;font-style:italic;font-family:'Spectral',serif;}
+
+  pre{
+    white-space:pre-wrap;
+    word-break:break-word;
+    font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+    font-size:.8rem;line-height:1.7;
+    background:#efe9db;
+    border-radius:6px;
+    padding:1em 1.2em;
+    margin:2vh 0;
+    color:#3a362e;
+  }
+  pre .cm{color:var(--muted);}
+
+  /* 对照分栏: 自由分栏, 顶部手绘分隔线, 不加边框 */
+  .pair{display:flex;flex-wrap:wrap;gap:2.6rem;margin-top:2.5vh;}
+  .col{position:relative;transition:opacity .25s ease,filter .25s ease;}
+  .pair>.col{flex:1 1 300px;min-width:0;}
+  .col>h4{
+    font-size:.95rem;font-weight:600;letter-spacing:.08em;margin:0 0 .8em 0;
+    padding-bottom:.5em;border-bottom:1.5px solid var(--line);
+  }
+  .col.claude>h4{color:var(--claude);border-bottom-color:var(--claude-soft);}
+  .col.codex>h4{color:var(--codex);border-bottom-color:var(--codex-soft);}
+  .col.pi>h4{color:var(--pi);border-bottom-color:var(--pi-soft);}
+  .col ul{margin:.6em 0;padding-left:1.3em;}
+  .col li{margin:.45em 0;}
+  .col li::marker{color:var(--muted);}
+
+  .col.dimmed{opacity:.16;filter:grayscale(1);}
+  .col.dimmed::after{
+    content:"— 已淡出, 选「并排对照」恢复 —";
+    position:absolute;top:2.6em;left:0;font-size:.78rem;color:var(--muted);
+    letter-spacing:.1em;opacity:1;filter:none;
+  }
+
+  .lensbar{margin:4vh 0 0 0;font-size:.88rem;color:var(--muted);}
+  .lensbar button{
+    font:inherit;font-size:.85rem;letter-spacing:.08em;
+    background:none;border:1px solid var(--line);border-radius:999px;
+    color:var(--ink);padding:.25em 1.1em;margin:0 .5em .5em 0;cursor:pointer;
+  }
+  .lensbar button:hover,.lensbar button:focus-visible{border-color:var(--ink);outline:none;}
+  .lensbar button[aria-pressed="true"]{border-color:var(--ink);background:var(--ink);color:var(--paper);}
+
+  details{
+    margin:2.2vh 0;padding:.4em 0 .4em 1.2em;
+    border-left:1.5px solid var(--line);
+  }
+  summary{
+    cursor:pointer;font-size:.95rem;letter-spacing:.05em;
+    padding:.3em 0;
+  }
+  summary:hover,summary:focus-visible{color:#000;}
+  summary::marker{color:var(--muted);}
+  details .body{padding:.5em 0 1em 0;font-size:.93rem;color:#4a463d;}
+  details table{border-collapse:collapse;width:100%;font-size:.88rem;margin:1vh 0;}
+  details th,details td{text-align:left;padding:.45em .8em .45em 0;border-bottom:1px solid var(--line);vertical-align:top;}
+  details th{font-weight:600;letter-spacing:.05em;color:var(--ink);}
+
+  footer{margin-top:14vh;font-size:.85rem;color:var(--muted);}
+  footer .src{font-family:'Spectral',serif;font-style:italic;}
+</style>
+</head>
+<body>
+
+<!-- 手绘滤镜: 给 SVG 线条轻微抖动 -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <filter id="rough" x="-5%" y="-5%" width="110%" height="110%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.025" numOctaves="2" seed="7" result="n"/>
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="2.6"/>
+    </filter>
+    <filter id="rough2" x="-5%" y="-5%" width="110%" height="110%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.04" numOctaves="2" seed="3" result="n"/>
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="1.8"/>
+    </filter>
+    <pattern id="hatch" width="7" height="7" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+      <rect width="7" height="7" fill="#e6ddcb"/>
+      <line x1="0" y1="0" x2="0" y2="7" stroke="#b3a88f" stroke-width="1.4"/>
+    </pattern>
+  </defs>
+</svg>
+
+<div class="wrap">
+
+<header class="hero">
+  <p class="kicker">subagents, three recipes</p>
+  <h1>同一味药, 三种配方<br>Claude Code, Codex 与 pi-subagents 的子代理设计</h1>
+  <p class="lede">
+    两个商业旗舰 (Claude Code, Codex) 和一个开源社区插件 (pi-subagents, 跑在 pi 上)
+    交出了各自的 subagent 答卷. 诊断相同, 处方却很有意思地不同.
+    这一页只谈<em>产品设计</em> — 功能如何被呈现, 触发, 约束与沉淀 — 不碰实现细节.
+    信息来自三方官方文档/仓库 (2026 年中版本), 出处见文末.
+  </p>
+
+  <nav class="toc" aria-label="目录">
+    <p class="toc-title">contents</p>
+    <ol>
+      <li><span class="no">1</span><a href="#s1">同一个敌人: 上下文噪声, 与轻信</a></li>
+      <li><span class="no">2</span><a href="#s2">共同骨架: 已经收敛的部分</a></li>
+      <li><span class="no">3</span><a href="#s3">四个真正的分歧</a></li>
+      <li><span class="no">4</span><a href="#s4">取舍: 三家各赌了什么</a></li>
+      <li><span class="no">5</span><a href="#s5">附录: 角色对照与出处</a></li>
+    </ol>
+  </nav>
+</header>
+
+<!-- ==================== §1 ==================== -->
+<section id="s1">
+  <h2><span class="no">1</span>同一个敌人: 上下文噪声, 与轻信</h2>
+  <svg class="h2-under" viewBox="0 0 190 10" preserveAspectRatio="none" aria-hidden="true">
+    <path d="M2 6 C 40 2, 90 9, 188 4" fill="none" stroke="currentColor" stroke-width="1.6" filter="url(#rough2)"/>
+  </svg>
+  <p class="goal">本节目标: 说明 subagent 不是新能力, 而是对同一个老问题的回答 — 三家对「老问题是什么」的表述本身就有信息量.</p>
+
+  <p>
+    两家商业产品的文档用几乎相同的语言描述病因. Claude Code 说: 搜索记录, 日志, 文件内容会
+    「flood your main conversation」; Codex 更干脆, 直接引用术语
+    <strong>上下文污染</strong> (context pollution, 有用信息被中间输出淹没) 和
+    <strong>上下文腐烂</strong> (context rot, 窗口越满, 表现越差).
+  </p>
+  <p>
+    pi-subagents 的 README 几乎不谈上下文, 它说卖点是
+    「<strong>a second or third set of model eyes</strong>」— 第二双, 第三双眼睛.
+    同一味药, 商业产品主治<em>噪声</em>, 这个插件还治<em>轻信</em>: 单个模型会一本正经地犯错,
+    换一个脑子 (甚至换一家厂商的模型) 再看一遍, 病就藏不住了.
+  </p>
+  <p>
+    于是共同的处方是: 主上下文是整个系统里最贵的资产, noisy 的体力活必须外包 —
+    子代理在<em>自己的上下文窗口</em>里翻垃圾, 只把摘要带回主线.
+  </p>
+
+  <figure role="img" aria-label="上下文占用对比示意图: 单线程被噪声淹没, 主线加子代理保持干净">
+    <svg viewBox="0 0 720 268">
+      <g filter="url(#rough)" font-family="'Spectral','Noto Serif SC',serif">
+        <!-- 方案 A: 单线程 -->
+        <text x="6" y="30" font-size="14" fill="#847c6c" font-style="italic">方案 A · 单线程硬扛</text>
+        <g stroke="#2b2a26" stroke-width="1.2">
+          <rect x="90" y="44" width="112" height="42" fill="#d8cfae"/>
+          <rect x="202" y="44" width="168" height="42" fill="url(#hatch)"/>
+          <rect x="370" y="44" width="140" height="42" fill="url(#hatch)"/>
+          <rect x="510" y="44" width="84" height="42" fill="url(#hatch)"/>
+          <rect x="594" y="44" width="56" height="42" fill="#f0ead9"/>
+        </g>
+        <text x="146" y="70" font-size="12.5" text-anchor="middle" fill="#2b2a26">需求与决策</text>
+        <text x="286" y="70" font-size="12.5" text-anchor="middle" fill="#5c5545">探索笔记</text>
+        <text x="440" y="70" font-size="12.5" text-anchor="middle" fill="#5c5545">测试日志</text>
+        <text x="552" y="70" font-size="12.5" text-anchor="middle" fill="#5c5545">命令输出</text>
+        <text x="622" y="70" font-size="12.5" text-anchor="middle" fill="#847c6c">余量</text>
+        <!-- 噪声括号 -->
+        <path d="M202 100 Q 205 110 214 110 L 582 110 Q 591 110 594 100" fill="none" stroke="#a05c3b" stroke-width="1.4"/>
+        <text x="398" y="128" font-size="13" text-anchor="middle" fill="#a05c3b">噪声 ≈ 70% 的窗口, 主线被稀释</text>
+
+        <!-- 方案 B -->
+        <text x="6" y="172" font-size="14" fill="#847c6c" font-style="italic">方案 B · 主线 + 子代理</text>
+        <g stroke="#2b2a26" stroke-width="1.2">
+          <rect x="90" y="186" width="180" height="42" fill="#d8cfae"/>
+          <rect x="270" y="186" width="60" height="42" fill="#e4d9bd"/>
+          <rect x="330" y="186" width="130" height="42" fill="#f0ead9"/>
+        </g>
+        <text x="180" y="212" font-size="12.5" text-anchor="middle" fill="#2b2a26">需求, 约束与决策</text>
+        <text x="300" y="212" font-size="12.5" text-anchor="middle" fill="#5c5545">摘要</text>
+        <text x="395" y="212" font-size="12.5" text-anchor="middle" fill="#847c6c">呼吸空间</text>
+        <!-- 三个子代理气泡 -->
+        <g stroke="#2b2a26" stroke-width="1.2">
+          <circle cx="545" cy="186" r="24" fill="url(#hatch)"/>
+          <circle cx="603" cy="200" r="24" fill="url(#hatch)"/>
+          <circle cx="655" cy="222" r="24" fill="url(#hatch)"/>
+        </g>
+        <text x="545" y="190" font-size="11" text-anchor="middle" fill="#5c5545">探索</text>
+        <text x="603" y="204" font-size="11" text-anchor="middle" fill="#5c5545">测试</text>
+        <text x="655" y="226" font-size="11" text-anchor="middle" fill="#5c5545">日志</text>
+        <path d="M460 207 C 490 200, 505 195, 519 191" fill="none" stroke="#847c6c" stroke-width="1.2" stroke-dasharray="3 4"/>
+        <text x="470" y="192" font-size="11.5" fill="#847c6c">只回摘要</text>
+      </g>
+    </svg>
+    <figcaption>示意数据 (toy data): 斜线纹 = 一次性噪声, 米色 = 长期有效内容. 子代理把噪声吞进自己的窗口.</figcaption>
+  </figure>
+
+  <aside class="callout">
+    <span class="ct">key idea · 上下文卫生</span>
+    子代理存在的理由不是「更聪明」, 而是「更干净」. 它在独立窗口里干活, 主线只见摘要.
+    这是 subagent 的第一性原理 — 只不过 pi-subagents 在旁边补了一刀: 干净之外, 还要「被质疑过」.
+  </aside>
+</section>
+
+<!-- ==================== §2 ==================== -->
+<section id="s2">
+  <h2><span class="no">2</span>共同骨架: 已经收敛的部分</h2>
+  <svg class="h2-under" viewBox="0 0 190 10" preserveAspectRatio="none" aria-hidden="true">
+    <path d="M2 6 C 40 2, 90 9, 188 4" fill="none" stroke="currentColor" stroke-width="1.6" filter="url(#rough2)"/>
+  </svg>
+  <p class="goal">本节目标: 先列出三家不约而同的决策, 后面的分歧才衬得出来.</p>
+
+  <figure role="img" aria-label="子代理工作流: 主线程分派任务, 三个子代理并行, 摘要汇聚回主线">
+    <svg viewBox="0 0 720 300">
+      <g filter="url(#rough)" font-family="'Spectral','Noto Serif SC',serif">
+        <!-- 主线程 -->
+        <circle cx="95" cy="150" r="46" fill="#e4d9bd" stroke="#2b2a26" stroke-width="1.4"/>
+        <text x="95" y="146" font-size="13.5" text-anchor="middle" fill="#2b2a26">主线程</text>
+        <text x="95" y="164" font-size="11" text-anchor="middle" fill="#847c6c">需求与决策</text>
+
+        <!-- 三个子代理 -->
+        <g>
+          <rect x="270" y="26" width="180" height="248" rx="18" fill="none" stroke="#c9beab" stroke-width="1.2" stroke-dasharray="5 5"/>
+          <text x="360" y="20" font-size="11.5" text-anchor="middle" fill="#847c6c" font-style="italic">各自的独立上下文窗口</text>
+          <circle cx="360" cy="72" r="34" fill="#f0ead9" stroke="#2b2a26" stroke-width="1.2"/>
+          <text x="360" y="70" font-size="12.5" text-anchor="middle">探索</text>
+          <text x="360" y="86" font-size="10.5" text-anchor="middle" fill="#847c6c">搜代码 · 只读</text>
+          <circle cx="360" cy="152" r="34" fill="#f0ead9" stroke="#2b2a26" stroke-width="1.2"/>
+          <text x="360" y="150" font-size="12.5" text-anchor="middle">审查</text>
+          <text x="360" y="166" font-size="10.5" text-anchor="middle" fill="#847c6c">找风险 · 只读</text>
+          <circle cx="360" cy="232" r="34" fill="#f0ead9" stroke="#2b2a26" stroke-width="1.2"/>
+          <text x="360" y="230" font-size="12.5" text-anchor="middle">实现</text>
+          <text x="360" y="246" font-size="10.5" text-anchor="middle" fill="#847c6c">改补丁 · 可写</text>
+        </g>
+
+        <!-- 任务箭头 -->
+        <g fill="none" stroke="#847c6c" stroke-width="1.3">
+          <path d="M138 132 C 200 100, 260 82, 323 76"/>
+          <path d="M141 150 L 323 152"/>
+          <path d="M138 168 C 200 200, 260 222, 323 228"/>
+        </g>
+        <text x="200" y="98" font-size="11" fill="#847c6c">任务 + 约束</text>
+
+        <!-- 摘要汇聚 -->
+        <g fill="none" stroke="#847c6c" stroke-width="1.3" stroke-dasharray="4 4">
+          <path d="M396 76 C 470 84, 520 110, 556 132"/>
+          <path d="M396 152 L 552 150"/>
+          <path d="M396 228 C 470 216, 520 190, 556 168"/>
+        </g>
+        <text x="470" y="104" font-size="11" fill="#847c6c">摘要, 而非原始输出</text>
+
+        <circle cx="590" cy="150" r="34" fill="#d8cfae" stroke="#2b2a26" stroke-width="1.2"/>
+        <text x="590" y="147" font-size="12.5" text-anchor="middle">汇总</text>
+        <text x="590" y="163" font-size="10.5" text-anchor="middle" fill="#847c6c">一份回复</text>
+        <path d="M560 170 C 480 268, 200 262, 108 192" fill="none" stroke="#847c6c" stroke-width="1.3" stroke-dasharray="4 4"/>
+      </g>
+    </svg>
+    <figcaption>共同的运行骨架: 主线程分派 → 子代理并行 → 摘要汇聚. 三家都长这样.</figcaption>
+  </figure>
+
+  <p>在骨架之上, 三家还有一串不约而同的产品决策:</p>
+  <ul>
+    <li><strong>内置最小角色集</strong>: 一个读 (探索), 一个写 (执行), 一个审查/兜底. Claude Code 是 Explore / general-purpose / Plan; Codex 是 explorer / worker / default; pi-subagents 是 scout / worker / reviewer — 还多给一个「问」: oracle, 专职挑战决策本身.</li>
+    <li><strong>文件即定义</strong>: 自定义子代理都是「一个文件 = 一个 agent」, 都分项目级与个人级, 都鼓励项目级入库共享. Claude Code 与 pi-subagents 同宗 (Markdown + YAML frontmatter), Codex 用 TOML 配置层.</li>
+    <li><strong>权限默认继承, 可按 agent 收紧</strong>: 子代理继承父会话的权限上下文; 三家都支持把某个 agent 钉成只读/窄工具.</li>
+    <li><strong>模型与算力按角色分配</strong>: 探索用便宜快速的模型, 审查用高档推理 — 三份文档给了几乎相同的建议; pi-subagents 额外支持跨厂商 fallback (主模型挂了自动换别家).</li>
+    <li><strong>明示成本</strong>: 两家商业文档都警告: 每个子代理独立消耗模型与工具调用, token 账单高于单线程.</li>
+  </ul>
+
+  <aside class="callout">
+    <span class="ct">observation</span>
+    行业已经收敛出「读」与「写」的最小分工: 读的并行是免费午餐, 写的并行是麻烦的开始.
+    pi-subagents 多走了一步: 把「质疑」也做成内置角色 (oracle) — 这预告了它后面的路线.
+  </aside>
+</section>
+
+<!-- ==================== §3 ==================== -->
+<section id="s3">
+  <h2><span class="no">3</span>四个真正的分歧</h2>
+  <svg class="h2-under" viewBox="0 0 190 10" preserveAspectRatio="none" aria-hidden="true">
+    <path d="M2 6 C 40 2, 90 9, 188 4" fill="none" stroke="currentColor" stroke-width="1.6" filter="url(#rough2)"/>
+  </svg>
+  <p class="goal">本节目标: 前三个分歧三家同台, 第四个分歧是插件独自开辟的战场.</p>
+
+  <div class="lensbar" role="group" aria-label="视角筛选">
+    视角:
+    <button class="lens-btn" data-lens="both" aria-pressed="true">并排对照</button>
+    <button class="lens-btn" data-lens="claude" aria-pressed="false">只看 Claude Code</button>
+    <button class="lens-btn" data-lens="codex" aria-pressed="false">只看 Codex</button>
+    <button class="lens-btn" data-lens="pi" aria-pressed="false">只看 pi-subagents</button>
+  </div>
+
+  <!-- 3.1 -->
+  <h3>3.1 谁来决定 spawn: 模型路由 vs 显式请求 vs 显式意图 + 模型编排</h3>
+  <div class="pair">
+    <div class="col claude">
+      <h4><span class="badge claude">Claude Code</span> 自动委派是一等设计</h4>
+      <figure role="img" aria-label="自动门插画: 传感器识别描述, 门自动打开">
+        <svg viewBox="0 0 320 150">
+          <g filter="url(#rough2)" font-family="'Spectral','Noto Serif SC',serif">
+            <rect x="120" y="34" width="70" height="104" fill="#f0ead9" stroke="#a05c3b" stroke-width="1.6"/>
+            <line x1="155" y1="34" x2="155" y2="138" stroke="#a05c3b" stroke-width="1.2"/>
+            <circle cx="149" cy="88" r="2.6" fill="#a05c3b"/>
+            <path d="M140 20 Q 155 6 170 20" fill="none" stroke="#a05c3b" stroke-width="1.4"/>
+            <path d="M130 14 Q 155 -6 180 14" fill="none" stroke="#a05c3b" stroke-width="1.2"/>
+            <text x="155" y="150" font-size="11" text-anchor="middle" fill="#a05c3b">感应门: 识别意图即开</text>
+            <text x="14" y="60" font-size="11" fill="#5c5545">description:</text>
+            <text x="14" y="78" font-size="11" fill="#5c5545">「代码审查, </text>
+            <text x="14" y="94" font-size="11" fill="#5c5545">use proactively」</text>
+            <path d="M96 76 C 108 76, 112 78, 118 80" fill="none" stroke="#847c6c" stroke-width="1.1" stroke-dasharray="3 3"/>
+          </g>
+        </svg>
+      </figure>
+      <ul>
+        <li>模型根据 <code>description</code> + 当前任务 + 上下文<strong>自动决定</strong>委派; 在 description 里写 “use proactively” 可鼓励主动分派.</li>
+        <li>description 本质上是<strong>写给模型的路由信号</strong> — 一份招聘启事, 模型是招聘官.</li>
+        <li>显式通道是兜底, 且分三级: 自然语言点名 → @-mention 强制运行 → <code>--agent</code> 让整个会话扮演该 agent.</li>
+      </ul>
+    </div>
+    <div class="col codex">
+      <h4><span class="badge codex">Codex</span> 显式触发是一等设计</h4>
+      <figure role="img" aria-label="手动门插画: 手指按铃, 门才打开">
+        <svg viewBox="0 0 320 150">
+          <g filter="url(#rough2)" font-family="'Spectral','Noto Serif SC',serif">
+            <rect x="130" y="34" width="70" height="104" fill="#f0ead9" stroke="#5d7a63" stroke-width="1.6"/>
+            <line x1="165" y1="34" x2="165" y2="138" stroke="#5d7a63" stroke-width="1.2"/>
+            <circle cx="206" cy="80" r="7" fill="none" stroke="#5d7a63" stroke-width="1.5"/>
+            <path d="M232 96 C 226 88, 220 84, 213 81" fill="none" stroke="#5d7a63" stroke-width="1.4"/>
+            <path d="M232 96 L 238 104 M232 96 L 240 94" fill="none" stroke="#5d7a63" stroke-width="1.2"/>
+            <text x="165" y="150" font-size="11" text-anchor="middle" fill="#5d7a63">按铃才开: 决定权在人</text>
+            <text x="12" y="60" font-size="11" fill="#5c5545">「spawn two agents,</text>
+            <text x="12" y="78" font-size="11" fill="#5c5545">wait for all, then</text>
+            <text x="12" y="96" font-size="11" fill="#5c5545">summarize…」</text>
+          </g>
+        </svg>
+      </figure>
+      <ul>
+        <li>文档原话: <strong>「Codex only spawns subagents when you explicitly ask it to」</strong> — 直接要求, 或 AGENTS.md / skill 指令里写明委派.</li>
+        <li>description 被官方定义为 <em>human-facing guidance</em> — 写给人看的门牌, 不是路由信号.</li>
+        <li>设计逻辑: 分工是资源决策 (token 成倍消耗), 决定权留在人和仓库指令里, 不交给模型即兴.</li>
+      </ul>
+    </div>
+    <div class="col pi">
+      <h4><span class="badge pi">pi-subagents</span> 意图在人, 编排在模型</h4>
+      <figure role="img" aria-label="门铃加管家对话气泡: 用户按铃表达意图, 管家决定怎么分工">
+        <svg viewBox="0 0 320 150">
+          <g filter="url(#rough2)" font-family="'Spectral','Noto Serif SC',serif">
+            <rect x="120" y="34" width="70" height="104" fill="#f0ead9" stroke="#5f748a" stroke-width="1.6"/>
+            <line x1="155" y1="34" x2="155" y2="138" stroke="#5f748a" stroke-width="1.2"/>
+            <circle cx="196" cy="80" r="7" fill="none" stroke="#5f748a" stroke-width="1.5"/>
+            <path d="M222 96 C 216 88, 210 84, 203 81" fill="none" stroke="#5f748a" stroke-width="1.4"/>
+            <path d="M222 96 L 228 104 M222 96 L 230 94" fill="none" stroke="#5f748a" stroke-width="1.2"/>
+            <path d="M212 30 Q 246 4 282 20 Q 296 27 288 40 Q 279 52 250 48 Q 224 45 212 30 Z" fill="#f0ead9" stroke="#5f748a" stroke-width="1.3"/>
+            <text x="252" y="32" font-size="10" text-anchor="middle" fill="#5f748a">Pi 决定用谁,</text>
+            <text x="252" y="43" font-size="10" text-anchor="middle" fill="#5f748a">怎么组合</text>
+            <text x="155" y="150" font-size="11" text-anchor="middle" fill="#5f748a">按铃表达意图, 管家安排分工</text>
+            <text x="12" y="60" font-size="11" fill="#5c5545">「Use reviewer</text>
+            <text x="12" y="78" font-size="11" fill="#5c5545">to review</text>
+            <text x="12" y="96" font-size="11" fill="#5c5545">this diff.」</text>
+          </g>
+        </svg>
+      </figure>
+      <ul>
+        <li>用户用自然语言点名意图 (<strong>「Use reviewer to review this diff」</strong>), 但是否调用工具, 选哪个 agent, 怎么组合 — 由 Pi 决定.</li>
+        <li>README 第一句就划线: 装插件 ≠ 后台自动 reviewer, 它只是给了 Pi 一把<strong>委派的工具</strong>; 想每次都审查, 得在指令里写明.</li>
+        <li>位置介于两家之间: 意图显式 (像 Codex), 组合自主 (像 Claude Code).</li>
+      </ul>
+    </div>
+  </div>
+  <aside class="callout">
+    <span class="ct">nuance · 同一个字段, 三种读者</span>
+    Claude Code 的 description 喂给模型当路由信号; Codex 的 description 写给人当门牌;
+    pi-subagents 的 description 既给模型选 agent 用, 也允许你在设置里覆写它 — 人随时可以改招聘启事.
+  </aside>
+
+  <!-- 3.2 -->
+  <h3>3.2 子代理是什么: 资产 vs 线程 vs 可编程的编排原语</h3>
+  <div class="pair">
+    <div class="col claude">
+      <h4><span class="badge claude">Claude Code</span> 资产: 定义被精心设计, 可以积累</h4>
+      <figure role="img" aria-label="五层来源叠放的档案抽屉">
+        <svg viewBox="0 0 320 168">
+          <g filter="url(#rough2)" font-family="'Spectral','Noto Serif SC',serif">
+            <g stroke="#a05c3b" stroke-width="1.3" fill="#f0ead9">
+              <rect x="70" y="14" width="180" height="24" rx="4"/>
+              <rect x="78" y="44" width="180" height="24" rx="4"/>
+              <rect x="86" y="74" width="180" height="24" rx="4"/>
+              <rect x="94" y="104" width="180" height="24" rx="4"/>
+              <rect x="102" y="134" width="180" height="24" rx="4"/>
+            </g>
+            <g font-size="11" fill="#5c5545">
+              <text x="160" y="30" text-anchor="middle">managed (组织下发)</text>
+              <text x="168" y="60" text-anchor="middle">--agents CLI 旗标</text>
+              <text x="176" y="90" text-anchor="middle">.claude/agents/ (项目)</text>
+              <text x="184" y="120" text-anchor="middle">~/.claude/agents/ (个人)</text>
+              <text x="192" y="150" text-anchor="middle">plugin 分发</text>
+            </g>
+            <path d="M52 22 L 52 146" stroke="#847c6c" stroke-width="1.2"/>
+            <path d="M52 146 L 46 136 M52 146 L 58 136" stroke="#847c6c" stroke-width="1.2" fill="none"/>
+            <text x="40" y="88" font-size="10.5" fill="#847c6c" transform="rotate(-90 40 88)" text-anchor="middle">优先级递减</text>
+          </g>
+        </svg>
+      </figure>
+      <p>子代理是 <strong>Markdown + YAML frontmatter</strong> 的资产文件, 五层来源带优先级, 可进版本控制, 可打包成 plugin 分发. 字段已成体系:</p>
+      <pre><span class="cm"># .claude/agents/code-reviewer.md</span>
+---
+name: code-reviewer
+description: 代码审查专家. use proactively after edits.
+tools: Read, Grep, Glob, Bash   <span class="cm"># 工具白名单</span>
+model: sonnet                   <span class="cm"># 按角色配算力</span>
+permissionMode: default
+memory: project                 <span class="cm"># 跨会话持久记忆</span>
+isolation: worktree             <span class="cm"># 独立 repo 副本</span>
+---
+你是资深 reviewer, 先给结论, 按严重度排序…</pre>
+      <ul>
+        <li>还有 hooks, skills 预载, mcpServers, maxTurns, background 等字段; 定义甚至可被「agent teams」的队友复用.</li>
+        <li>子代理只拿到自己的 system prompt + 基本环境信息, 看不到父对话全文 — 卫生靠结构保证.</li>
+        <li>近期版本子代理<strong>默认后台运行</strong>, 可恢复, 可追加指令.</li>
+      </ul>
+    </div>
+    <div class="col codex">
+      <h4><span class="badge codex">Codex</span> 线程: 运行被精心设计, 用完即收</h4>
+      <figure role="img" aria-label="三个可检视的线程窗口, 带操控按钮">
+        <svg viewBox="0 0 320 168">
+          <g filter="url(#rough2)" font-family="'Spectral','Noto Serif SC',serif">
+            <g stroke="#5d7a63" stroke-width="1.3" fill="#f0ead9">
+              <rect x="26" y="20" width="120" height="56" rx="6"/>
+              <rect x="70" y="56" width="120" height="56" rx="6"/>
+              <rect x="114" y="92" width="120" height="56" rx="6"/>
+            </g>
+            <g font-size="10.5" fill="#5c5545">
+              <text x="38" y="42">thread · 安全审查</text>
+              <text x="38" y="60">运行中…</text>
+              <text x="82" y="78">thread · 测试缺口</text>
+              <text x="82" y="96">运行中…</text>
+              <text x="126" y="114">thread · 可维护性</text>
+              <text x="126" y="132">已完成 ✓</text>
+            </g>
+            <text x="240" y="42" font-size="10.5" fill="#5d7a63">检视</text>
+            <text x="240" y="60" font-size="10.5" fill="#5d7a63">追加指令</text>
+            <text x="240" y="78" font-size="10.5" fill="#5d7a63">停止 / 关闭</text>
+          </g>
+        </svg>
+      </figure>
+      <p>子代理的运行实体是 <strong>agent thread</strong>, 一等 UI 对象: 桌面端 / CLI / IDE 里可打开检视, 可中途 steer, 可停止, 可关闭; 编排 (spawn, 路由后续指令, 等全部结果, 关线程) 由 Codex 托管.</p>
+      <pre><span class="cm"># .codex/agents/reviewer.toml</span>
+name = "reviewer"
+description = "PR reviewer, correctness & security."
+model = "gpt-5.6-terra"
+model_reasoning_effort = "high"
+sandbox_mode = "read-only"
+developer_instructions = """
+Lead with concrete findings.
+Avoid style-only comments.
+"""</pre>
+      <ul>
+        <li>TOML 的本质是「<strong>spawn 出来的会话的配置层</strong>」: 除了 name/description/developer_instructions, 可以直接覆盖任何会话配置 (模型, 沙箱, MCP, skills).</li>
+        <li>官方自承: 这「can feel heavier than a dedicated agent manifest, and the format may evolve」— 定义格式尚未定型.</li>
+        <li>不指定模型时, Codex 按任务自动平衡智能/速度/价格.</li>
+      </ul>
+    </div>
+    <div class="col pi">
+      <h4><span class="badge pi">pi-subagents</span> 原语: 组合本身是一等产品</h4>
+      <figure role="img" aria-label="三种编排积木: 链, 并行, 定时">
+        <svg viewBox="0 0 320 168">
+          <g filter="url(#rough2)" font-family="'Spectral','Noto Serif SC',serif">
+            <!-- chain -->
+            <circle cx="46" cy="34" r="13" fill="#f0ead9" stroke="#5f748a" stroke-width="1.4"/>
+            <circle cx="86" cy="34" r="13" fill="#f0ead9" stroke="#5f748a" stroke-width="1.4"/>
+            <circle cx="126" cy="34" r="13" fill="#f0ead9" stroke="#5f748a" stroke-width="1.4"/>
+            <path d="M59 34 L 73 34 M99 34 L 113 34" stroke="#5f748a" stroke-width="1.3"/>
+            <text x="150" y="38" font-size="11" fill="#5c5545">chain 链式</text>
+            <!-- parallel -->
+            <circle cx="46" cy="96" r="13" fill="#f0ead9" stroke="#5f748a" stroke-width="1.4"/>
+            <circle cx="96" cy="78" r="13" fill="#f0ead9" stroke="#5f748a" stroke-width="1.4"/>
+            <circle cx="96" cy="114" r="13" fill="#f0ead9" stroke="#5f748a" stroke-width="1.4"/>
+            <path d="M58 90 L 84 80 M58 102 L 84 112" stroke="#5f748a" stroke-width="1.3"/>
+            <text x="150" y="100" font-size="11" fill="#5c5545">parallel 并行</text>
+            <!-- async/schedule -->
+            <circle cx="46" cy="148" r="13" fill="#f0ead9" stroke="#5f748a" stroke-width="1.4"/>
+            <path d="M46 141 L 46 148 L 52 151" stroke="#5f748a" stroke-width="1.3" fill="none"/>
+            <text x="150" y="152" font-size="11" fill="#5c5545">async 后台 / 定时调度</text>
+            <text x="200" y="38" font-size="11" fill="#847c6c">fork 上下文</text>
+            <text x="200" y="100" font-size="11" fill="#847c6c">saved workflow</text>
+            <text x="200" y="152" font-size="11" fill="#847c6c">mission 存档</text>
+          </g>
+        </svg>
+      </figure>
+      <p>子代理是完整的 pi 子会话, 而<strong>组合方式是一等概念</strong>: chain, parallel, async, fork/fresh 上下文, 可保存的工作流, 定时调度, mission 持久记录 — 甚至直接暴露一段 JS 让你编程编排:</p>
+      <pre>subagent({ workflowScript: `
+  const s = await runs.run("scan",
+    { agent: "scout", task: "Scan the codebase" });
+  return await runs.all([
+    { key: "correct", agent: "reviewer",
+      task: "Review: " + s.output },
+    { key: "tests", agent: "reviewer",
+      task: "Tests: " + s.output },
+  ]);
+` })</pre>
+      <ul>
+        <li>可观测性长在 TUI 里: 常驻 <strong>FleetView</strong> 面板 + <code>/subagents-fleet</code> 检视器 (读 transcript, steer, stop) — 与 Codex 的线程检视异曲同工.</li>
+        <li>自定义 agent 与 Claude Code 同宗 (Markdown frontmatter, 四层 scope: builtin &lt; package &lt; user &lt; project), 另有 eject/disable/reset 等管理动作, 把内置 agent 拷出来改.</li>
+        <li>套路被固化成 prompt 快捷方式: <code>/parallel-review</code>, <code>/review-loop</code> (审查-修复循环直到干净).</li>
+      </ul>
+    </div>
+  </div>
+  <aside class="callout">
+    <span class="ct">summary · 复杂度花在了三个不同的地方</span>
+    Claude Code 把设计预算花在「定义」上 — 十几种字段, 五层作用域, 记忆与 hooks;
+    Codex 花在「运行」上 — 线程的检视, 干预与生命周期;
+    pi-subagents 花在「组合」上 — 链, 并行, 脚本, 调度, 快捷方式.
+  </aside>
+
+  <!-- 3.3 -->
+  <h3>3.3 并行写的冲突: 工程解 vs 纪律解 vs 全都要</h3>
+  <div class="pair">
+    <div class="col claude">
+      <h4><span class="badge claude">Claude Code</span> 把冲突关进机制</h4>
+      <figure role="img" aria-label="两张分开的书桌, 各自写作互不干扰">
+        <svg viewBox="0 0 320 130">
+          <g filter="url(#rough2)" font-family="'Spectral','Noto Serif SC',serif">
+            <rect x="30" y="50" width="110" height="14" rx="3" fill="#e4d9bd" stroke="#a05c3b" stroke-width="1.3"/>
+            <line x1="44" y1="64" x2="44" y2="96" stroke="#a05c3b" stroke-width="1.3"/>
+            <line x1="126" y1="64" x2="126" y2="96" stroke="#a05c3b" stroke-width="1.3"/>
+            <path d="M58 44 Q 84 30 112 44" fill="none" stroke="#5c5545" stroke-width="1.2"/>
+            <text x="85" y="116" font-size="11" text-anchor="middle" fill="#5c5545">worktree A</text>
+            <rect x="180" y="50" width="110" height="14" rx="3" fill="#e4d9bd" stroke="#a05c3b" stroke-width="1.3"/>
+            <line x1="194" y1="64" x2="194" y2="96" stroke="#a05c3b" stroke-width="1.3"/>
+            <line x1="276" y1="64" x2="276" y2="96" stroke="#a05c3b" stroke-width="1.3"/>
+            <path d="M208 44 Q 234 30 262 44" fill="none" stroke="#5c5545" stroke-width="1.2"/>
+            <text x="235" y="116" font-size="11" text-anchor="middle" fill="#5c5545">worktree B</text>
+          </g>
+        </svg>
+      </figure>
+      <ul>
+        <li><code>isolation: worktree</code> 给子代理一份<strong>独立的 git 工作区副本</strong>, 并行写互不相踩.</li>
+        <li>子代理的命令若试图落回主 checkout, 直接报错 — 隔离由工具强制执行, 不靠自觉.</li>
+      </ul>
+    </div>
+    <div class="col codex">
+      <h4><span class="badge codex">Codex</span> 把冲突交给约定</h4>
+      <figure role="img" aria-label="一张桌子两只手, 旁边立着小心撞车的提示牌">
+        <svg viewBox="0 0 320 130">
+          <g filter="url(#rough2)" font-family="'Spectral','Noto Serif SC',serif">
+            <rect x="70" y="52" width="150" height="14" rx="3" fill="#e4d9bd" stroke="#5d7a63" stroke-width="1.3"/>
+            <line x1="88" y1="66" x2="88" y2="98" stroke="#5d7a63" stroke-width="1.3"/>
+            <line x1="202" y1="66" x2="202" y2="98" stroke="#5d7a63" stroke-width="1.3"/>
+            <path d="M96 46 C 116 34, 130 36, 138 44" fill="none" stroke="#5c5545" stroke-width="1.2"/>
+            <path d="M196 46 C 176 34, 162 36, 154 44" fill="none" stroke="#5c5545" stroke-width="1.2"/>
+            <path d="M138 44 L 154 44" stroke="#a05c3b" stroke-width="1.6" stroke-dasharray="2 3"/>
+            <path d="M252 26 L 274 62 L 230 62 Z" fill="none" stroke="#a05c3b" stroke-width="1.5"/>
+            <text x="252" y="55" font-size="16" text-anchor="middle" fill="#a05c3b">!</text>
+            <text x="145" y="118" font-size="11" text-anchor="middle" fill="#5c5545">同一工作区 · 写并行需自觉</text>
+          </g>
+        </svg>
+      </figure>
+      <ul>
+        <li>官方建议原文: 读密集任务 (探索, 测试, 分诊, 摘要) <strong>放心并行</strong>; 写密集并行「be more careful」— 冲突与协调开销由使用者权衡.</li>
+        <li>缓解手段是按 agent 收紧沙箱 (如只读), 而不是提供隔离副本.</li>
+      </ul>
+    </div>
+    <div class="col pi">
+      <h4><span class="badge pi">pi-subagents</span> 机制与纪律, 全都要</h4>
+      <figure role="img" aria-label="两张书桌加一块提示牌: 单写者纪律">
+        <svg viewBox="0 0 320 130">
+          <g filter="url(#rough2)" font-family="'Spectral','Noto Serif SC',serif">
+            <rect x="24" y="50" width="96" height="13" rx="3" fill="#e4d9bd" stroke="#5f748a" stroke-width="1.3"/>
+            <line x1="36" y1="63" x2="36" y2="92" stroke="#5f748a" stroke-width="1.3"/>
+            <line x1="108" y1="63" x2="108" y2="92" stroke="#5f748a" stroke-width="1.3"/>
+            <text x="72" y="112" font-size="10.5" text-anchor="middle" fill="#5c5545">worktree A</text>
+            <rect x="140" y="50" width="96" height="13" rx="3" fill="#e4d9bd" stroke="#5f748a" stroke-width="1.3"/>
+            <line x1="152" y1="63" x2="152" y2="92" stroke="#5f748a" stroke-width="1.3"/>
+            <line x1="224" y1="63" x2="224" y2="92" stroke="#5f748a" stroke-width="1.3"/>
+            <text x="188" y="112" font-size="10.5" text-anchor="middle" fill="#5c5545">worktree B</text>
+            <path d="M262 26 L 292 76 L 232 76 Z" fill="none" stroke="#a05c3b" stroke-width="1.5"/>
+            <text x="262" y="64" font-size="15" text-anchor="middle" fill="#a05c3b">!</text>
+            <text x="262" y="94" font-size="10" text-anchor="middle" fill="#a05c3b">one writer</text>
+          </g>
+        </svg>
+      </figure>
+      <ul>
+        <li>机制面: 工作流里 <code>worktree: true</code> 给每个写子代理独立工作区, 产出 patch + handoff 清单回收.</li>
+        <li>纪律面同样写成明文: 「Keep one writer」, 写完后用 <strong>fresh-context 的独立 reviewer</strong> 复核, 由父会话综合 — 文档把这套称为安全关键准则.</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- 3.4 -->
+  <h3>3.4 插件独自开辟的战场: 信任工程</h3>
+  <p class="goal">商业产品默认信任编排的结果; pi-subagents 把「该不该信, 信到什么程度」做成了产品功能.</p>
+  <div class="pair">
+    <div class="col pi" style="flex-basis:100%;">
+      <h4><span class="badge pi">pi-subagents</span> 验收, 对抗, 边界 — 全部摆上桌面</h4>
+      <figure role="img" aria-label="信任工程示意: 父子双向通信, 验收阶梯, 递归守卫">
+        <svg viewBox="0 0 720 210">
+          <g filter="url(#rough)" font-family="'Spectral','Noto Serif SC',serif">
+            <!-- 左: 父子双向 -->
+            <circle cx="80" cy="80" r="34" fill="#e4d9bd" stroke="#2b2a26" stroke-width="1.3"/>
+            <text x="80" y="77" font-size="12" text-anchor="middle">父会话</text>
+            <text x="80" y="92" font-size="10" text-anchor="middle" fill="#847c6c">决策者</text>
+            <circle cx="80" cy="180" r="30" fill="#f0ead9" stroke="#5f748a" stroke-width="1.3"/>
+            <text x="80" y="177" font-size="12" text-anchor="middle">子代理</text>
+            <text x="80" y="191" font-size="10" text-anchor="middle" fill="#847c6c">执行者</text>
+            <path d="M104 152 C 128 138, 128 122, 106 110" fill="none" stroke="#5f748a" stroke-width="1.3"/>
+            <path d="M106 110 L 104 120 M106 110 L 114 116" fill="none" stroke="#5f748a" stroke-width="1.3"/>
+            <text x="136" y="128" font-size="10.5" fill="#5f748a">contact_supervisor:</text>
+            <text x="136" y="142" font-size="10.5" fill="#5f748a">我需要决策, 不瞎猜</text>
+            <path d="M56 112 C 34 126, 34 140, 54 152" fill="none" stroke="#847c6c" stroke-width="1.2" stroke-dasharray="4 4"/>
+            <text x="6" y="136" font-size="10.5" fill="#847c6c">任务 + 约束</text>
+
+            <!-- 中: 验收阶梯 -->
+            <g>
+              <text x="330" y="30" font-size="12.5" fill="#5f748a">验收阶梯 (acceptance gates)</text>
+              <g stroke="#5f748a" stroke-width="1.3" fill="#f0ead9">
+                <rect x="270" y="150" width="90" height="24" rx="4"/>
+                <rect x="330" y="114" width="90" height="24" rx="4"/>
+                <rect x="390" y="78" width="90" height="24" rx="4"/>
+                <rect x="450" y="42" width="110" height="24" rx="4"/>
+              </g>
+              <g font-size="10.5" fill="#5c5545">
+                <text x="315" y="166" text-anchor="middle">attested</text>
+                <text x="375" y="130" text-anchor="middle">checked</text>
+                <text x="435" y="94" text-anchor="middle">verified</text>
+                <text x="505" y="58" text-anchor="middle">+ 独立 reviewer 复核</text>
+              </g>
+              <text x="330" y="196" font-size="10.5" fill="#847c6c">写者的结果可被要求由另一个 fresh-context agent 验收</text>
+            </g>
+
+            <!-- 右: 边界 -->
+            <g>
+              <text x="620" y="30" font-size="12.5" fill="#5f748a" text-anchor="middle">显式边界</text>
+              <rect x="566" y="46" width="130" height="98" rx="10" fill="none" stroke="#5f748a" stroke-width="1.3" stroke-dasharray="5 4"/>
+              <g font-size="10.5" fill="#5c5545">
+                <text x="576" y="68">· 子代理默认禁 spawn</text>
+                <text x="576" y="88">· 递归深度守卫 = 2</text>
+                <text x="576" y="108">· spawn 配额需人确认</text>
+                <text x="576" y="128">· watchdog 对抗审查</text>
+              </g>
+              <text x="620" y="168" font-size="10.5" fill="#847c6c" text-anchor="middle">二审建议用「互补模型」:</text>
+              <text x="620" y="184" font-size="10.5" fill="#847c6c" text-anchor="middle">换一家厂商的强模型再挑刺</text>
+            </g>
+          </g>
+        </svg>
+        <figcaption>信任工程的四个组件: 双向通信, 验收阶梯, 递归/配额边界, 异构模型对抗审查.</figcaption>
+      </figure>
+      <ul>
+        <li><strong>验收分级</strong>: 每个子代理结果可要求 attested → checked → verified 的证据等级, 还可强制「独立复核」— 写者的活儿必须由另一个干净上下文的 reviewer 签字.</li>
+        <li><strong>对抗性二审</strong>: 可选 watchdog 盯着改动挑刺, 并推荐用<em>互补模型</em> (别家厂商的强模型) 做二审 — 把「模型异构」当安全特性, 这是单厂商商业产品结构上给不了的.</li>
+        <li><strong>边界显式化</strong>: 子代理默认不是编排者, 不许再 spawn; 递归深度守卫默认两层; 追加 spawn 配额需要人明确确认.</li>
+        <li><strong>双向通信</strong>: 子代理遇到决策点可通过 contact_supervisor 反问父会话 (需要决策 / 请求访谈 / 进度通报), 而不是猜着往下写.</li>
+      </ul>
+    </div>
+  </div>
+  <aside class="callout">
+    <span class="ct">why it matters</span>
+    商业产品的信任模型是「信任平台, 平台信任模型」; 这个插件的信任模型是「默认不信任, 用流程换信任」.
+    这不是功能多少的差异, 是对「agent 会怎么犯错」的不同假设.
+  </aside>
+</section>
+
+<!-- ==================== §4 ==================== -->
+<section id="s4">
+  <h2><span class="no">4</span>取舍: 三家各赌了什么</h2>
+  <svg class="h2-under" viewBox="0 0 190 10" preserveAspectRatio="none" aria-hidden="true">
+    <path d="M2 6 C 40 2, 90 9, 188 4" fill="none" stroke="currentColor" stroke-width="1.6" filter="url(#rough2)"/>
+  </svg>
+  <p class="goal">本节目标: 把分歧收拢成三种产品哲学, 看清各自的代价.</p>
+
+  <figure role="img" aria-label="结尾隐喻: 根深的树, 飞散的鸟群, 布满旋钮的控制台">
+    <svg viewBox="0 0 960 215">
+      <g filter="url(#rough)" font-family="'Spectral','Noto Serif SC',serif">
+        <!-- 树: Claude Code -->
+        <g stroke="#a05c3b" stroke-width="1.6" fill="none">
+          <path d="M150 150 C 148 110, 146 90, 150 60"/>
+          <path d="M150 96 C 130 84, 118 70, 114 52"/>
+          <path d="M150 82 C 170 70, 182 58, 188 40"/>
+          <path d="M150 60 C 142 48, 140 40, 142 30"/>
+          <path d="M150 150 C 136 162, 122 166, 108 168 M150 150 C 156 164, 168 170, 182 172 M150 150 C 148 164, 144 172, 138 178"/>
+        </g>
+        <circle cx="114" cy="48" r="9" fill="#e8d8cb" stroke="#a05c3b" stroke-width="1.2"/>
+        <circle cx="188" cy="36" r="9" fill="#e8d8cb" stroke="#a05c3b" stroke-width="1.2"/>
+        <circle cx="142" cy="26" r="9" fill="#e8d8cb" stroke="#a05c3b" stroke-width="1.2"/>
+        <text x="150" y="198" font-size="12.5" text-anchor="middle" fill="#a05c3b">专才库: 定义沉淀复利</text>
+
+        <!-- 鸟群: Codex -->
+        <g stroke="#5d7a63" stroke-width="1.6" fill="none">
+          <path d="M400 60 Q 410 50 420 60 Q 430 50 440 60"/>
+          <path d="M460 40 Q 470 30 480 40 Q 490 30 500 40"/>
+          <path d="M490 80 Q 500 70 510 80 Q 520 70 530 80"/>
+          <path d="M430 100 Q 440 90 450 100 Q 460 90 470 100"/>
+          <path d="M530 50 Q 540 40 550 50 Q 560 40 570 50"/>
+          <path d="M380 110 Q 390 100 400 110 Q 410 100 420 110"/>
+        </g>
+        <path d="M360 150 C 430 132, 510 130, 590 138" fill="none" stroke="#c9beab" stroke-width="1.1" stroke-dasharray="3 5"/>
+        <text x="480" y="176" font-size="12.5" text-anchor="middle" fill="#5d7a63">任务群: 召之即来, 交付即散</text>
+
+        <!-- 控制台: pi-subagents -->
+        <rect x="690" y="36" width="200" height="112" rx="12" fill="#f0ead9" stroke="#5f748a" stroke-width="1.6"/>
+        <circle cx="730" cy="78" r="13" fill="none" stroke="#5f748a" stroke-width="1.4"/>
+        <path d="M730 78 L 738 68" stroke="#5f748a" stroke-width="1.4"/>
+        <circle cx="770" cy="78" r="13" fill="none" stroke="#5f748a" stroke-width="1.4"/>
+        <path d="M770 78 L 770 65" stroke="#5f748a" stroke-width="1.4"/>
+        <circle cx="810" cy="78" r="13" fill="none" stroke="#5f748a" stroke-width="1.4"/>
+        <path d="M810 78 L 802 70" stroke="#5f748a" stroke-width="1.4"/>
+        <rect x="842" y="66" width="30" height="22" rx="11" fill="none" stroke="#5f748a" stroke-width="1.4"/>
+        <circle cx="864" cy="77" r="6" fill="#5f748a"/>
+        <g stroke="#5f748a" stroke-width="1.1">
+          <line x1="716" y1="112" x2="752" y2="112"/>
+          <line x1="716" y1="122" x2="764" y2="122"/>
+          <line x1="716" y1="132" x2="744" y2="132"/>
+        </g>
+        <text x="790" y="176" font-size="12.5" text-anchor="middle" fill="#5f748a">控制台: 验收, 对抗, 配额都是旋钮</text>
+      </g>
+    </svg>
+  </figure>
+
+  <div class="pair">
+    <div class="col claude">
+      <h4><span class="badge claude">Claude Code</span> 赌「专才会复利」</h4>
+      <p>相信团队会反复需要同一种专家: 审查者, 探索者, 数据库守门人. 于是定义可沉淀 (版本控制, plugin 分发), 行为可积累 (跨会话 memory), 委派可自动化.</p>
+      <p><strong>代价</strong>: 概念面大 — 五层作用域, 十几个字段; 自动委派引入不确定性, 模型可能误判路由.</p>
+    </div>
+    <div class="col codex">
+      <h4><span class="badge codex">Codex</span> 赌「简单即可靠」</h4>
+      <p>相信分工的时机是资源决策, 该由人 (或仓库里的书面指令) 显式做出. 运行体验做到极致: 线程可见, 可干预, 可收尾, 编排全托管.</p>
+      <p><strong>代价</strong>: 触发负担在用户 — 不主动要求就没有并行; 专精配置的沉淀弱, 自定义格式官方明说还会变.</p>
+    </div>
+    <div class="col pi">
+      <h4><span class="badge pi">pi-subagents</span> 赌「控制面值得暴露」</h4>
+      <p>相信用户想要的是旋钮: 验收等级, 对抗审查, 异构模型, 递归守卫, spawn 配额 — 商业产品替你收起来的复杂度, 它全部摆上台面, 连编排都给你一段 JS 直接写.</p>
+      <p><strong>代价</strong>: 概念最多, 学习曲线最陡; 价值依赖使用者的纪律; 且绑定 pi 生态, 受众天然小.</p>
+    </div>
+  </div>
+
+  <aside class="callout">
+    <span class="ct">so what</span>
+    这不是对错题, 是三种用户画像: 要团队资产沉淀的选 Claude Code; 要省心显式驱动的选 Codex;
+    要把每个环节都捏在自己手里 (甚至想用别家模型做二审) 的, pi-subagents 这种社区插件反而最合身.
+    商业产品为规模优化, 插件为控制欲优化.
+  </aside>
+</section>
+
+<!-- ==================== §5 ==================== -->
+<section id="s5">
+  <h2><span class="no">5</span>附录: 角色对照与出处</h2>
+  <svg class="h2-under" viewBox="0 0 190 10" preserveAspectRatio="none" aria-hidden="true">
+    <path d="M2 6 C 40 2, 90 9, 188 4" fill="none" stroke="currentColor" stroke-width="1.6" filter="url(#rough2)"/>
+  </svg>
+
+  <details id="d-roles">
+    <summary>内置角色对照表</summary>
+    <div class="body">
+      <table>
+        <tr><th></th><th>Claude Code</th><th>Codex</th><th>pi-subagents</th></tr>
+        <tr><td>读 (探索)</td><td>Explore: 只读, 快速搜索; 可调 thoroughness 档位</td><td>explorer: 读密集代码库探索</td><td>scout (本地侦察) + researcher (网络/文档)</td></tr>
+        <tr><td>写 (执行)</td><td>general-purpose: 全工具, 多步任务</td><td>worker: 实现与修复</td><td>worker: 实现; 未批准的决策升级上报, 不猜</td></tr>
+        <tr><td>审查</td><td>(由自定义/general-purpose 承担)</td><td>(由自定义承担)</td><td>reviewer: 内置一等角色</td></tr>
+        <tr><td>兜底</td><td>claude: catch-all</td><td>default: 通用 fallback</td><td>delegate: 行为贴近父会话</td></tr>
+        <tr><td>特色</td><td>Plan (plan mode 研究员), statusline-setup, claude-code-guide</td><td>—</td><td>oracle: 决策二审, 挑战假设, 不动文件</td></tr>
+      </table>
+    </div>
+  </details>
+
+  <details id="d-model">
+    <summary>模型与成本路由</summary>
+    <div class="body">
+      <p><span class="badge claude">Claude Code</span> 子代理默认继承主会话模型, 可按 agent 固定为 sonnet/opus/haiku; 官方卖点之一是「把任务路由到更快更便宜的 Haiku 以控成本」. 推理 effort 也可按 agent 覆盖.</p>
+      <p><span class="badge codex">Codex</span> 不显式指定时, 由 Codex 按任务自动平衡智能/速度/价格; 也可在 agent 文件里钉死 <code>model</code> 与 <code>model_reasoning_effort</code> (low → ultra).</p>
+      <p><span class="badge pi">pi-subagents</span> 模型无关: 按角色覆盖模型, <code>fallbackModels</code> 支持跨厂商顺序兜底 (配额/超时自动换), thinking 档位可调; watchdog 甚至会推荐一个「互补模型」做对抗二审 — 把模型异构当质量手段.</p>
+    </div>
+  </details>
+
+  <details id="d-src">
+    <summary>事实出处</summary>
+    <div class="body">
+      <p class="src">Claude Code — code.claude.com/docs/en/sub-agents (built-in agents, frontmatter 字段, 作用域优先级, worktree 隔离, 后台运行).</p>
+      <p class="src">Codex — OpenAI 官方文档「Subagents」页 (learn.chatgpt.com/docs/agent-configuration/subagents 镜像), 及 GitHub openai/codex issue #2604.</p>
+      <p class="src">pi-subagents — github.com/nicobailon/pi-subagents: README, docs/agents.md (自定义 agent 与覆写机制), docs/workflows.md (编排, worktree, supervisor 通信, 递归守卫).</p>
+    </div>
+  </details>
+</section>
+
+<footer>
+  <p>手绘线条: 赭石 ● 为 Claude Code, 灰绿 ■ 为 Codex, 灰蓝 ▲ 为 pi-subagents. 本页只谈产品设计, 不评价实现.</p>
+</footer>
+
+</div>
+
+<script>
+  window.__PRESENTATION_STATE__ = { version: 1, values: { lens: "both", open: [] } };
+  (function(){
+    var state = window.__PRESENTATION_STATE__;
+    var cols = Array.prototype.slice.call(document.querySelectorAll('.col'));
+    function who(c){
+      if (c.classList.contains('claude')) return 'claude';
+      if (c.classList.contains('codex')) return 'codex';
+      if (c.classList.contains('pi')) return 'pi';
+      return null;
+    }
+    function setLens(lens){
+      state.values.lens = lens;
+      document.querySelectorAll('.lens-btn').forEach(function(b){
+        b.setAttribute('aria-pressed', b.dataset.lens === lens ? 'true' : 'false');
+      });
+      cols.forEach(function(c){
+        var w = who(c);
+        c.classList.toggle('dimmed', lens !== 'both' && w !== null && w !== lens);
+      });
+    }
+    document.querySelectorAll('.lens-btn').forEach(function(b){
+      b.addEventListener('click', function(){ setLens(b.dataset.lens); });
+    });
+    // details 开合状态
+    document.querySelectorAll('details').forEach(function(d){
+      d.addEventListener('toggle', function(){
+        var open = new Set(state.values.open);
+        if (d.open) { open.add(d.id); } else { open.delete(d.id); }
+        state.values.open = Array.from(open);
+      });
+    });
+  })();
+</script>
+</body>
+</html>

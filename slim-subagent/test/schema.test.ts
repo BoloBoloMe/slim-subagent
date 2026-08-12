@@ -1,0 +1,50 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import extensionFactory from "../index.ts";
+
+// 接缝 (EXECUTION.md 测试策略接缝 1): fake ExtensionAPI 捕获 registerTool 注册的 schema 与描述
+// 预期值来自 M2 决策账本 (独立真相源), 非实现拷贝.
+
+// M2-D008 钉死的 9 个参数名
+const PINNED_PARAMS = ["agent", "task", "tasks", "model", "timeoutMs", "usageBudget", "cwd", "action", "id"];
+
+// M2-D010 工具描述 v3 原文 (逐字, 含标点)
+const V3_DESCRIPTION =
+  '把可独立的任务优先委派给子代理, 保持主会话上下文精简; 调用后阻塞等待结果. 单次: agent + task. ' +
+  '并行: tasks[] (≤8, 并发 4), 全部跑完, 失败逐任务报告 — 适合只读工作 (审查/研究) 和写互不重叠产物的任务; ' +
+  '改动共享文件 (项目代码/配置) 须串行单写. action:"list" 发现可用 agents; "resume" + id 恢复被 timeout/usageBudget 中止的运行.';
+
+function captureRegistration(): {
+  name: string;
+  description: string;
+  parameters: { properties: Record<string, unknown> };
+} {
+  let captured:
+    | { name: string; description: string; parameters: { properties: Record<string, unknown> } }
+    | undefined;
+  const fakeApi = {
+    registerTool(tool: {
+      name: string;
+      description: string;
+      parameters: { properties: Record<string, unknown> };
+    }) {
+      captured = tool;
+    },
+  } as unknown as ExtensionAPI;
+  extensionFactory(fakeApi);
+  if (!captured) throw new Error("registerTool 未被调用");
+  return captured;
+}
+
+test("TC-001 schema exposes exactly 9 pinned params", () => {
+  const { parameters } = captureRegistration();
+  const names = Object.keys(parameters.properties);
+  assert.equal(names.length, 9);
+  assert.deepEqual(names.sort(), [...PINNED_PARAMS].sort());
+});
+
+test("TC-002 description matches pinned v3 text", () => {
+  const { description } = captureRegistration();
+  assert.equal(description, V3_DESCRIPTION);
+});
