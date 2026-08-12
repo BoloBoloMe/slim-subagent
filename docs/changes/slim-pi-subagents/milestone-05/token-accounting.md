@@ -51,3 +51,7 @@
 
 - 无: 实测数字与 B 报告同口径可比, 模块装载与 schema.test.ts 复验均通过.
 - 已知限制 (非本次范围): prompt caching 下 cacheRead 随轮次线性膨胀是运行时行为, 静态面计账不含; 运行时 prompt 注入 (append-system-prompt 等) 不属于静态工具面.
+
+## 后注 (M6 后增补)
+
+M6 后应用户要求加入 promptSnippet + promptGuidelines (system prompt 的 Available tools/Guidelines 段, resolve-skill 同机制): 新增 252 chars (snippet 28 + guidelines 224). 静态面合计 1465 chars ≈ **~366 tok/请求**, 仍在 450 硬顶内.

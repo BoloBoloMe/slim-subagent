@@ -428,6 +428,17 @@ export default function (pi: ExtensionAPI) {
     name: "subagent",
     label: "Subagent",
     description: TOOL_DESCRIPTION,
+    // System Prompt 面 (与 resolve-skill 同机制): snippet 进 Available tools, guidelines 进 Guidelines.
+    // 写法规格: 每条必须与 description/schema 零重复, 只装模型无法从参数面推断的操作知识.
+    promptSnippet: "委派子代理执行独立任务 (单次/并行/恢复中止的运行).",
+    promptGuidelines: [
+      // 最大失败模式: task 引用本会话上下文 — 子代理是全新上下文的独立进程, 看不到对话历史.
+      "子代理是全新上下文的独立进程, 看不到本会话: task 必须自包含 (目标/相关文件路径/约束), 不引用对话历史.",
+      // M6 新增行为, 模型无法从描述推断: 中止文本自带 runId, 尾段报号是放宽后的匹配规则.
+      "被 timeout/usageBudget 中止的运行, 返回文本自带 runId 与恢复指引; resume 时 id 从头报前缀或只报随机尾段均可.",
+      // 点名内置名册, 省掉常用路径下的 list 往返.
+      "内置 agents: explorer (只读探查/研究), worker (写/执行), reviewer (只读审查); 不确定有哪些可用时 action:\"list\".",
+    ],
     parameters: SubagentParams,
     async execute(
       _toolCallId: string,

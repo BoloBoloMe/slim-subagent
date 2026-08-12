@@ -48,3 +48,16 @@ test("TC-002 description matches pinned v3 text", () => {
   const { description } = captureRegistration();
   assert.equal(description, V3_DESCRIPTION);
 });
+
+test("TC-002prompt system-prompt 面存在且与描述零重复", () => {
+  const reg = captureRegistration() as unknown as {
+    promptSnippet?: string;
+    promptGuidelines?: string[];
+  };
+  // M6 后增补: promptSnippet 进 Available tools, promptGuidelines 进 Guidelines (resolve-skill 同机制).
+  assert.ok(reg.promptSnippet && reg.promptSnippet.length > 0, "promptSnippet 缺失");
+  assert.equal(reg.promptGuidelines?.length, 3, "promptGuidelines 应恰 3 条");
+  for (const g of reg.promptGuidelines ?? []) {
+    assert.ok(g.length > 10, "guideline 不应为空壳");
+  }
+});
