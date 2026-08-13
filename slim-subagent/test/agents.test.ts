@@ -63,9 +63,9 @@ test("TC-001 builtin agents discoverable with pinned tools and no model", async 
     // 数据面 (M1-D008 + 调和 10): tools 工具面固定; 均不带 model 字段; body (system prompt) 非空.
     const builtin = discoverAgents().filter((a) => ["explorer", "reviewer", "worker"].includes(a.name));
     assert.equal(builtin.length, 3);
-    assert.equal(builtin.find((a) => a.name === "explorer")?.tools?.join(","), "read,grep,find,ls,bash");
+    assert.equal(builtin.find((a) => a.name === "explorer")?.tools?.join(","), "read,grep,find,ls,bash,resolve_skill");
     assert.equal(builtin.find((a) => a.name === "worker")?.tools, undefined, "worker 无 tools 字段 = 全工具");
-    assert.equal(builtin.find((a) => a.name === "reviewer")?.tools?.join(","), "read,grep,find,ls,bash");
+    assert.equal(builtin.find((a) => a.name === "reviewer")?.tools?.join(","), "read,grep,find,ls,bash,resolve_skill");
     for (const a of builtin) {
       assert.equal(a.model, undefined, `内置 agent ${a.name} 不带 model 字段 (调和 10)`);
       assert.ok(a.systemPrompt.trim().length > 0, `${a.name} body (system prompt) 非空`);
@@ -75,16 +75,39 @@ test("TC-001 builtin agents discoverable with pinned tools and no model", async 
   }
 });
 
-test("TC-002 explorer spawns with --tools read,grep,find,ls,bash and no --model", async () => {
+test("TC-002 explorer spawns with --tools read,grep,find,ls,bash,resolve_skill and no --model", async () => {
   const home = makeTempHome();
   try {
     const { result, bundle } = await runSingleWithBundle(home, { agent: "explorer", task: "探查项目结构" });
     assert.equal(result.isError, undefined);
     const args = bundle.argv;
     assert.ok(args.includes("--tools"), "explorer argv 应含 --tools");
-    assert.equal(args[args.indexOf("--tools") + 1], "read,grep,find,ls,bash");
+    assert.equal(args[args.indexOf("--tools") + 1], "read,grep,find,ls,bash,resolve_skill");
     assert.ok(!args.includes("--model"), "内置 agent 无 model → 省略 --model (调和 10)");
+    assert.ok(!args.includes("-e"), "临时 HOME 无 resolve-skill 扩展 → argv 无 -e (静默跳过)");
     assert.ok(bundle.prompt && bundle.prompt.content.trim().length > 0, "explorer system prompt 应注入");
+  } finally {
+    cleanup(home);
+  }
+});
+
+// resolve-skill 例外: user 级扩展文件存在时 spawn argv 恒带 -e <路径> (--no-extensions 下显式 -e 仍生效),
+// 使全部子代理 (含无 tools 字段的 worker) 可用 resolve_skill.
+test("TC-002a resolve-skill extension is injected via -e when present in agent dir", async () => {
+  const home = makeTempHome();
+  try {
+    const extDir = path.join(home, ".pi", "agent", "extensions");
+    fs.mkdirSync(extDir, { recursive: true });
+    const extPath = path.join(extDir, "resolve-skill.ts");
+    fs.writeFileSync(extPath, "export default function () {}\n", "utf-8");
+    for (const agent of ["explorer", "worker"]) {
+      const { result, bundle } = await runSingleWithBundle(home, { agent, task: "任务" });
+      assert.equal(result.isError, undefined);
+      const args = bundle.argv;
+      assert.ok(args.includes("-e"), `${agent} argv 应含 -e (resolve-skill 注入)`);
+      assert.equal(args[args.indexOf("-e") + 1], extPath, `${agent} -e 应指向 user 级 resolve-skill.ts`);
+      assert.ok(args.includes("--no-extensions"), `${agent} argv 仍含 --no-extensions (仅显式例外)`);
+    }
   } finally {
     cleanup(home);
   }

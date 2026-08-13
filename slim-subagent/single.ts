@@ -381,7 +381,14 @@ export function getPiInvocation(
 
 // ---- M3-04 考察点 2 保留段 + EXECUTION.md 调和 8: args 组装. ----
 // base ["--mode","json","-p"], 恒 --session <per-run 文件>, --model 有才加, --tools csv 有才加,
-// 恒 --no-skills + --no-extensions (调和 8), --append-system-prompt <temp 0600 文件>, Task: <task> (>8000 转 @file).
+// 恒 --no-skills + --no-extensions (调和 8) + 显式 -e resolve-skill 例外 (--no-extensions 下显式 -e 仍生效,
+// 使全部子代理可用 resolve_skill; 文件缺失静默跳过), --append-system-prompt <temp 0600 文件>, Task: <task> (>8000 转 @file).
+// resolve-skill 扩展路径: user 级 ~/.pi/agent/extensions/resolve-skill.ts (与父会话同源单一真相, 不 vendoring).
+export function resolveSkillExtensionPath(): string | undefined {
+  const p = path.join(getAgentDir(), "extensions", "resolve-skill.ts");
+  return fs.existsSync(p) ? p : undefined;
+}
+
 function buildPiArgs(opts: {
   agent: AgentConfig;
   task: string;
@@ -394,6 +401,8 @@ function buildPiArgs(opts: {
   if (opts.model) args.push("--model", opts.model);
   if (opts.agent.tools && opts.agent.tools.length > 0) args.push("--tools", opts.agent.tools.join(","));
   args.push("--no-skills", "--no-extensions");
+  const resolveSkillExt = resolveSkillExtensionPath();
+  if (resolveSkillExt) args.push("-e", resolveSkillExt);
   if (opts.promptFile) args.push("--append-system-prompt", opts.promptFile);
   if (opts.task.length > TASK_ARG_LIMIT) {
     const safeName = opts.agent.name.replace(/[^\w.-]+/g, "_");

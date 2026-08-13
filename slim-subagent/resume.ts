@@ -14,6 +14,7 @@ import {
   assembleSingleResult,
   emptyUsage,
   resolveEffectiveUsageBudget,
+  resolveSkillExtensionPath,
   runProcess,
   sessionRootDir,
   sessionsRootDir,
@@ -106,6 +107,8 @@ function buildResumeArgs(opts: {
   if (opts.model) args.push("--model", opts.model);
   if (opts.tools && opts.tools.length > 0) args.push("--tools", opts.tools.join(","));
   args.push("--no-skills", "--no-extensions");
+  const resolveSkillExt = resolveSkillExtensionPath();
+  if (resolveSkillExt) args.push("-e", resolveSkillExt);
   if (opts.promptFile) args.push("--append-system-prompt", opts.promptFile);
   if (opts.task.length > TASK_ARG_LIMIT) {
     const taskFile = path.join(opts.tmpDir, "task-resume.txt");

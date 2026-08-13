@@ -75,6 +75,33 @@ test("TC-001 resume reopens persisted session with follow-up", async () => {
     assert.equal(bundle.prompt.content, "system prompt body", "prompt 文件 = 原 agent body");
     assert.equal(args[args.length - 1], "Task: 继续做", "follow-up 原文追加 (接受中断 turn 重复, M3 §四 #5)");
     assert.ok(args.includes("--no-skills") && args.includes("--no-extensions"), "恒 --no-skills/--no-extensions (调和 8)");
+    assert.ok(!args.includes("-e"), "临时 HOME 无 resolve-skill 扩展 → resume argv 无 -e (静默跳过)");
+  } finally {
+    cleanup(home);
+  }
+});
+
+// resolve-skill 例外: 扩展文件存在时 resume spawn 同样带 -e (收尾与首次运行同权).
+test("TC-001a resume spawn injects resolve-skill extension via -e when present", async () => {
+  const home = makeTempHome();
+  try {
+    const extDir = path.join(home, ".pi", "agent", "extensions");
+    fs.mkdirSync(extDir, { recursive: true });
+    const extPath = path.join(extDir, "resolve-skill.ts");
+    fs.writeFileSync(extPath, "export default function () {}\n", "utf-8");
+    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\ntools: bash\n");
+    const single = await runTool(home, { agent: "Alpha", task: "最初任务" });
+    const runId = (single.details as SingleDetails).runId;
+    const bundlePath = path.join(home, "resume-bundle.json");
+    const resumed = await withFakePi(home, "assistant-stop", { bundlePath }, async () => {
+      const tool = captureTool();
+      const ctx = { cwd: home } as ExtensionContext;
+      return tool.execute("call-1", { action: "resume", id: runId, task: "终止任务" }, undefined, undefined, ctx);
+    });
+    assert.equal(resumed.isError, undefined);
+    const args = (JSON.parse(fs.readFileSync(bundlePath, "utf-8")) as { argv: string[] }).argv;
+    assert.ok(args.includes("-e"), "resume argv 应含 -e (resolve-skill 注入)");
+    assert.equal(args[args.indexOf("-e") + 1], extPath, "resume -e 应指向 user 级 resolve-skill.ts");
   } finally {
     cleanup(home);
   }
