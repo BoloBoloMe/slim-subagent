@@ -63,7 +63,7 @@ test("TC-001 builtin agents discoverable with pinned tools and no model", async 
     // 数据面 (M1-D008 + 调和 10): tools 工具面固定; 均不带 model 字段; body (system prompt) 非空.
     const builtin = discoverAgents().filter((a) => ["explorer", "reviewer", "worker"].includes(a.name));
     assert.equal(builtin.length, 3);
-    assert.equal(builtin.find((a) => a.name === "explorer")?.tools?.join(","), "read,grep,find,ls");
+    assert.equal(builtin.find((a) => a.name === "explorer")?.tools?.join(","), "read,grep,find,ls,bash");
     assert.equal(builtin.find((a) => a.name === "worker")?.tools, undefined, "worker 无 tools 字段 = 全工具");
     assert.equal(builtin.find((a) => a.name === "reviewer")?.tools?.join(","), "read,grep,find,ls,bash");
     for (const a of builtin) {
@@ -75,14 +75,14 @@ test("TC-001 builtin agents discoverable with pinned tools and no model", async 
   }
 });
 
-test("TC-002 explorer spawns with --tools read,grep,find,ls and no --model", async () => {
+test("TC-002 explorer spawns with --tools read,grep,find,ls,bash and no --model", async () => {
   const home = makeTempHome();
   try {
     const { result, bundle } = await runSingleWithBundle(home, { agent: "explorer", task: "探查项目结构" });
     assert.equal(result.isError, undefined);
     const args = bundle.argv;
     assert.ok(args.includes("--tools"), "explorer argv 应含 --tools");
-    assert.equal(args[args.indexOf("--tools") + 1], "read,grep,find,ls");
+    assert.equal(args[args.indexOf("--tools") + 1], "read,grep,find,ls,bash");
     assert.ok(!args.includes("--model"), "内置 agent 无 model → 省略 --model (调和 10)");
     assert.ok(bundle.prompt && bundle.prompt.content.trim().length > 0, "explorer system prompt 应注入");
   } finally {
@@ -104,7 +104,7 @@ test("TC-003 worker spawns with no --tools and no --model", async () => {
 });
 
 // EXECUTION.md 调和 16: 同名 agent 冲突 = user 覆盖内置 — spawn 解析到 user 版
-// (tools/model/prompt 取 user 定义; 本测试 user explorer 仅改 tools, argv --tools 应取 user 值而非内置 read,grep,find,ls).
+// (tools/model/prompt 取 user 定义; 本测试 user explorer 仅改 tools, argv --tools 应取 user 值而非内置 read,grep,find,ls,bash).
 test("TC-005 same-name user agent wins spawn resolution (调和 16)", async () => {
   const home = makeTempHome();
   try {

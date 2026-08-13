@@ -428,15 +428,17 @@ export default function (pi: ExtensionAPI) {
     label: "Subagent",
     description: TOOL_DESCRIPTION,
     // System Prompt 面 (与 resolve-skill 同机制): snippet 进 Available tools, guidelines 进 Guidelines.
-    // 写法规格: 每条必须与 description/schema 零重复, 只装模型无法从参数面推断的操作知识.
-    promptSnippet: "把独立任务委派给子代理执行.",
+    // snippet 是 Available tools 单行条目 (每轮常驻) — 承担委派偏置: 把判断从 "要不要派" 翻转为 "为什么不派";
+    // 接口形状在 description, task 自包含在 G1, 各司其职零重复.
+    promptSnippet: "独立且值得的任务默认委派给子代理, 主会话只留判断与整合.",
     promptGuidelines: [
       // 最大失败模式: task 引用本会话上下文 — 子代理是全新上下文的独立进程.
-      "子代理是全新上下文的独立进程: task 必须自包含 (目标/相关文件路径/约束), 不引用本会话内容.",
+      "子代理是全新上下文的独立进程: task 必须自包含 (目标/相关文件路径/约束/skill使用建议), 不引用本会话内容.",
       // 真行为约束: 防并行写冲突 (并发 4/上限 8 由 schema 参数描述承担, 不重复).
       "并行适合只读工作 (审查/研究) 或写互不重叠产物的任务; 改动共享文件 (项目代码/配置) 须串行单写.",
-      // 点名内置名册, 省掉常用路径下的 list 往返.
-      "内置 agents: explorer (只读探查), worker (执行), reviewer (只读审查).",
+      // 内置名册: 职能词 + 选型轴, 完整描述由 agents/*.md frontmatter 承担 (单一真相源);
+      // reviewer 委派注意点 (须指定对象/范围/方向) 是描述里没有的操作知识, 必须内联.
+      "内置 agents: explorer (只读探查, 返回带出处的发现), worker (全工具, 写/执行任务), reviewer (只读审查, 证据分级报告; 委派须指定被审对象/范围/方向).",
     ],
     parameters: SubagentParams,
     async execute(
