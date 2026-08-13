@@ -24,7 +24,7 @@ function withoutPiBinary<T>(fn: () => T): T {
   }
 }
 
-test("TC-A1 addressing level (c) hits script under pi package root (realpath canonical)", () => {
+test("TC-A1 addressing level (c) hits script under pi package root (realpath canonical)", { skip: process.platform === "win32" ? "Windows 创建 symlink 需管理员/开发者模式 (EPERM)" : false }, () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "addr-test-"));
   try {
     // 命中: 包根 package.json name 匹配 + realpath 后仍 runnable.

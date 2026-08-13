@@ -19,6 +19,7 @@ import {
   writeAgent,
   resultText,
   cleanup,
+  SKIP_POSIX_SIGNALS,
   type ExecutedResult,
 } from "./helpers.ts";
 
@@ -77,7 +78,7 @@ async function runSingleWithLimit(
 
 // ---- 超限非聚合行 → failProtocol (M3-01 考察点 5: 终止子进程 + 报错形态) ----
 
-test("TC-LIMIT-001 oversized non-aggregate line: failProtocol error + SIGTERM + exitCode 1", { timeout: 8000 }, async () => {
+test("TC-LIMIT-001 oversized non-aggregate line: failProtocol error + SIGTERM + exitCode 1", { timeout: 8000, skip: SKIP_POSIX_SIGNALS }, async () => {
   const home = makeTempHome();
   try {
     writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");
@@ -107,7 +108,7 @@ test("TC-LIMIT-001 oversized non-aggregate line: failProtocol error + SIGTERM + 
   }
 });
 
-test("TC-LIMIT-004 oversized turn_end garbage: invalid projection → failProtocol", { timeout: 8000 }, async () => {
+test("TC-LIMIT-004 oversized turn_end garbage: invalid projection → failProtocol", { timeout: 8000, skip: SKIP_POSIX_SIGNALS }, async () => {
   const home = makeTempHome();
   try {
     writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");
@@ -172,7 +173,7 @@ test("TC-LIMIT-003 oversized agent_end line: projected preserving willRetry, no 
 
 // ---- failProtocol 终止序列: SIGTERM 后不退 → +3s SIGKILL (与 drain 同常量 HARD_KILL_MS) ----
 
-test("TC-LIMIT-005 failProtocol SIGTERM ignored: +3s SIGKILL", { timeout: 8000 }, async () => {
+test("TC-LIMIT-005 failProtocol SIGTERM ignored: +3s SIGKILL", { timeout: 8000, skip: SKIP_POSIX_SIGNALS }, async () => {
   const home = makeTempHome();
   try {
     writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");

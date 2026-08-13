@@ -98,7 +98,8 @@ test("TC-004 spawn argv follows pinned contract", async () => {
     assert.ok(promptIdx !== -1, "argv 应含 --append-system-prompt");
     assert.ok(bundle.prompt, "fake 应回显 prompt 快照");
     assert.equal(bundle.prompt.content, "system prompt body", "prompt 文件内容 = agent body");
-    assert.equal(bundle.prompt.mode, 0o600, "prompt 文件权限 0600");
+    // Windows 无 POSIX 权限位 (fs mode 参数被忽略), 仅 POSIX 断言 0600.
+    if (process.platform !== "win32") assert.equal(bundle.prompt.mode, 0o600, "prompt 文件权限 0600");
 
     // 末参 `Task: <task>` (≤8000 内联).
     assert.equal(args[args.length - 1], "Task: 做点事");

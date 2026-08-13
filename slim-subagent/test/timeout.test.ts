@@ -17,6 +17,7 @@ import {
   writeAgent,
   resultText,
   cleanup,
+  SKIP_POSIX_SIGNALS,
   type ExecutedResult,
 } from "./helpers.ts";
 
@@ -36,6 +37,7 @@ type SingleDetails = {
   contextPercent?: number | null;
   contextWindow?: number;
   partialOutput?: string;
+  sessionSaved?: boolean;
   hint?: string;
 };
 
@@ -115,6 +117,15 @@ test("TC-001 timeout aborts with diagnostic payload", async () => {
     assert.equal(details.sessionDir, path.join(home, ".pi", "agent", "slim-subagent", "sessions", details.runId));
     assert.ok(fs.existsSync(details.sessionDir), "超时后 session 目录应保留");
 
+    // sessionSaved = session 文件落盘实况 (resume 硬前提, M5 观察 #3): 与磁盘等价, 文案分支跟随.
+    const sessionFile = path.join(details.sessionDir, "run-0", "session.jsonl");
+    assert.equal(details.sessionSaved, fs.existsSync(sessionFile), "sessionSaved 应反映 session.jsonl 落盘实况");
+    if (details.sessionSaved) {
+      assert.ok(text.includes('action="resume"'), `session 已落盘 → content 应含恢复调用步骤, got: ${text}`);
+    } else {
+      assert.ok(text.includes("重发"), `session 未落盘 → content 应指引直接重发, got: ${text}`);
+    }
+
     // 修复项 3: usage 同正常 6 字段 (M2-D002(b)) — slow fake 每条 assistant 带 usage
     // {input:10, output:5, cacheRead:0, cacheWrite:0, cost:{total:0.01}}, 超时前收到的 N 条累加,
     // 断言值与 turns 成正比 (turns 数受调度抖动影响, 不钉死绝对值).
@@ -133,7 +144,7 @@ test("TC-001 timeout aborts with diagnostic payload", async () => {
   }
 });
 
-test("TC-002 timeout signal sequence: SIGINT@0 → SIGTERM@+~1s → SIGKILL@+~4s", async () => {
+test("TC-002 timeout signal sequence: SIGINT@0 → SIGTERM@+~1s → SIGKILL@+~4s", { skip: SKIP_POSIX_SIGNALS }, async () => {
   // 真实信号时序断言 (宽松区间, node 调度抖动容忍): fake-pi 记录 SIGINT/SIGTERM 时间戳;
   // SIGKILL 不可捕获, 由 slow 场景 heartbeat 最后一条时间戳推断 (≈ SIGKILL 时刻, 误差 ≤ 200ms).
   const home = makeTempHome();
@@ -218,17 +229,99 @@ test("TC-004 diagnostics prefer ctx.getContextUsage", async () => {
   const home = makeTempHome();
   try {
     writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");
+    // 默认阈值 30: 25% 属正常区 → 建议 resume.
     const { details } = await runSingleWithTimeout(home, {
       timeoutMs: 10,
-      getContextUsage: () => ({ tokens: 50000, contextWindow: 128000, percent: 39 }),
+      getContextUsage: () => ({ tokens: 50000, contextWindow: 128000, percent: 25 }),
     });
 
-    assert.equal(details.contextPercent, 39);
+    assert.equal(details.contextPercent, 25);
     assert.equal(details.contextWindow, 128000);
     // M3-05 规则 2: getContextUsage().tokens 可得时优先于 message totalTokens.
     assert.equal(details.contextTokens, 50000);
     assert.ok(typeof details.hint === "string", "有百分比时应产出 hint");
-    assert.ok(details.hint!.includes("resume"), "低占用应建议 resume");
+    assert.ok(details.hint!.includes("resume"), "正常区占用应建议 resume");
+    // 长版指令: 判断规则行应含阈值与正常区判定.
+    const text = resultText(await runSingleWithTimeout(home, {
+      timeoutMs: 10,
+      getContextUsage: () => ({ tokens: 50000, contextWindow: 128000, percent: 25 }),
+    }).then((r) => r.result));
+    assert.ok(text.includes("≤30%"), `判断规则应含阈值边界, got: ${text}`);
+  } finally {
+    cleanup(home);
+  }
+});
+
+test("TC-004a default threshold 30: 39% occupancy enters sluggish zone, suggests new agent", async () => {
+  const home = makeTempHome();
+  try {
+    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");
+    // 修复 50→30: 默认阈值 30, 39% 已入迟钝区 → 建议新起 (旧实现 50 下会误建议 resume).
+    const { result, details } = await runSingleWithTimeout(home, {
+      timeoutMs: 10,
+      getContextUsage: () => ({ tokens: 50000, contextWindow: 128000, percent: 39 }),
+    });
+    assert.equal(details.contextPercent, 39);
+    assert.ok(details.hint!.includes("新起"), `高占用 hint 应建议新起, got: ${details.hint}`);
+    const text = resultText(result);
+    assert.ok(text.includes(">30%"), `判断规则应标注迟钝区, got: ${text}`);
+    assert.ok(
+      text.includes("建议新起") || text.includes("新起通常更稳"),
+      `高占用长版指令应导向新起, got: ${text}`,
+    );
+  } finally {
+    cleanup(home);
+  }
+});
+
+test("TC-004b threshold configurable via PI_SUBAGENT_RESUME_HINT_PERCENT", async () => {
+  const home = makeTempHome();
+  try {
+    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");
+    // 环境变量一处覆盖: 阈值提到 50 → 39% 回到正常区, 建议 resume (旧行为可配置重现).
+    const prev = process.env.PI_SUBAGENT_RESUME_HINT_PERCENT;
+    process.env.PI_SUBAGENT_RESUME_HINT_PERCENT = "50";
+    try {
+      const { result, details } = await runSingleWithTimeout(home, {
+        timeoutMs: 10,
+        getContextUsage: () => ({ tokens: 50000, contextWindow: 128000, percent: 39 }),
+      });
+      assert.equal(details.contextPercent, 39);
+      assert.ok(details.hint!.includes("resume"), `阈值 50 下 39% 应建议 resume, got: ${details.hint}`);
+      assert.ok(resultText(result).includes("≤50%"), `判断规则应反映配置值 50, got: ${resultText(result)}`);
+    } finally {
+      if (prev === undefined) delete process.env.PI_SUBAGENT_RESUME_HINT_PERCENT;
+      else process.env.PI_SUBAGENT_RESUME_HINT_PERCENT = prev;
+    }
+  } finally {
+    cleanup(home);
+  }
+});
+
+test("TC-004c budget line follows PI_SUBAGENT_BUDGET_RATIO (文案与计算同源)", async () => {
+  const home = makeTempHome();
+  try {
+    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");
+    // ctx 无 modelRegistry → 兜底窗口 128000; 默认 ratio 0.7 → 89600, 覆盖 0.5 → 64000; 文案百分比应跟随.
+    const defaultRun = await runSingleWithTimeout(home, { timeoutMs: 10 });
+    const defaultText = resultText(defaultRun.result);
+    assert.ok(
+      defaultText.includes("预算: 89600 tokens (自动 = 70% × 模型窗口)"),
+      `默认 ratio 预算行应含 89600/70%, got: ${defaultText}`,
+    );
+    const prev = process.env.PI_SUBAGENT_BUDGET_RATIO;
+    process.env.PI_SUBAGENT_BUDGET_RATIO = "0.5";
+    try {
+      const { result } = await runSingleWithTimeout(home, { timeoutMs: 10 });
+      const text = resultText(result);
+      assert.ok(
+        text.includes("预算: 64000 tokens (自动 = 50% × 模型窗口)"),
+        `ratio 覆盖后预算行数值与百分比应同步, got: ${text}`,
+      );
+    } finally {
+      if (prev === undefined) delete process.env.PI_SUBAGENT_BUDGET_RATIO;
+      else process.env.PI_SUBAGENT_BUDGET_RATIO = prev;
+    }
   } finally {
     cleanup(home);
   }

@@ -13,6 +13,7 @@ import type { AgentConfig } from "./agents.ts";
 import {
   assembleSingleResult,
   emptyUsage,
+  resolveEffectiveUsageBudget,
   runProcess,
   sessionRootDir,
   sessionsRootDir,
@@ -172,6 +173,9 @@ export async function runResume(
     ? () => ((ctx as { getContextUsage: () => { tokens: number | null; contextWindow: number; percent: number | null } | undefined }).getContextUsage())
     : undefined;
 
+  // 强制预算 (用户协议): resume (含收尾) 同样强制 — 未显式传 budget → 自动 0.7 × 原 run 模型窗口.
+  const eff = resolveEffectiveUsageBudget(usageBudget, run.model ?? agent.model, ctx);
+
   // TS-002: spawn 前 acquire 锁 (M3-03 考察点 3 规格 3: resume 全流程持有; 活冲突报错不排队, stale 回收重试 ≤2).
   let lease: LeaseOwner;
   try {
@@ -199,10 +203,14 @@ export async function runResume(
       fs.writeFileSync(promptFile, agent.systemPrompt, { encoding: "utf-8", mode: 0o600 });
     }
     const args = buildResumeArgs({ model: run.model, tools: run.tools, sessionFile: run.sessionFile, promptFile, tmpDir, task });
-    const result = await runProcess(agent, task, args, cwd, timeoutMs, signal, usageBudget, onUpdate);
+    const result = await runProcess(agent, task, args, cwd, timeoutMs, signal, eff.budget, onUpdate);
     return assembleSingleResult(result, {
       runId: run.runId,
       sessionDir: sessionRootDir(run.runId),
+      sessionFile: run.sessionFile, // resume 硬前提已在寻址校验过存在 → sessionSaved=true
+      agent: run.agent,
+      usageBudget: eff.budget,
+      budgetAuto: eff.auto,
       getContextUsage,
       resumed: true,
     });

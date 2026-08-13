@@ -68,18 +68,28 @@ export function writeAgent(home: string, fileName: string, yaml: string, body = 
   fs.writeFileSync(path.join(dir, fileName), `---\n${yaml}\n---\n${body}\n`);
 }
 
-// getAgentDir() 每次调用读 env (PI_CODING_AGENT_DIR 优先, 否则 os.homedir() = $HOME), 无缓存.
+// Windows 无 POSIX 信号语义: child.kill() 直接终止进程, 子进程无法接住/记录 SIGINT/SIGTERM —
+// 依赖 fake pi 信号时序记录的用例平台跳过 (false = 不跳过).
+export const SKIP_POSIX_SIGNALS: string | false =
+  process.platform === "win32" ? "Windows 无 POSIX 信号语义, 子进程收不到 SIGINT/SIGTERM" : false;
+
+// getAgentDir() 每次调用读 env (PI_CODING_AGENT_DIR 优先, 否则 os.homedir()), 无缓存.
+// os.homedir(): POSIX 读 $HOME, Windows 读 %USERPROFILE% — 两者都要覆盖, 否则 Windows 隔离失效.
 // 临时 HOME 隔离 + 清掉可能的外部 PI_CODING_AGENT_DIR 覆盖.
 export async function withHome<T>(home: string, fn: () => Promise<T>): Promise<T> {
   const prevHome = process.env.HOME;
+  const prevUserProfile = process.env.USERPROFILE;
   const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.HOME = home;
+  process.env.USERPROFILE = home;
   delete process.env.PI_CODING_AGENT_DIR;
   try {
     return await fn();
   } finally {
     if (prevHome === undefined) delete process.env.HOME;
     else process.env.HOME = prevHome;
+    if (prevUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = prevUserProfile;
     if (prevAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
   }

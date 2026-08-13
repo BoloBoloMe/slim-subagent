@@ -19,7 +19,7 @@ import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
 import { discoverAgents, formatAgentList } from "./agents.ts";
 import type { AgentConfig } from "./agents.ts";
-import { runSingleAgent, makeRunId, sessionRootDir } from "./single.ts";
+import { runSingleAgent, makeRunId, sessionRootDir, resolveEffectiveUsageBudget } from "./single.ts";
 import type { SingleDetails, StreamUpdateCallback, Usage } from "./single.ts";
 import { runResume, runSessionGc } from "./resume.ts";
 
@@ -199,6 +199,7 @@ async function runParallelTasks(
   cwd: string,
   signal: AbortSignal | undefined,
   getContextUsage: (() => { tokens: number | null; contextWindow: number; percent: number | null } | undefined) | undefined,
+  ctx: unknown, // 强制预算: 子代理模型窗口查询 (modelRegistry)
   onUpdate?: StreamUpdateCallback, // ISSUE-07 deferred (b): parallel onUpdate 聚合流
 ): Promise<AgentToolResult<ParallelDetails>> {
   const tasks = params.tasks as { agent?: unknown; task?: unknown; model?: unknown; timeoutMs?: unknown; usageBudget?: unknown }[];
@@ -233,8 +234,12 @@ async function runParallelTasks(
     const agent = agents.find((a) => a.name === t.agent);
     const model = typeof t.model === "string" && t.model !== "" ? t.model : defaultModel;
     const timeoutMs = typeof t.timeoutMs === "number" ? t.timeoutMs : defaultTimeout;
-    const usageBudget = (t.usageBudget as number | undefined) ?? defaultBudget;
-    return { item: t, agent, model, timeoutMs, usageBudget };
+    const explicitBudget = (t.usageBudget as number | undefined) ?? defaultBudget;
+    // 强制预算: 每 child 未显式传 budget → 自动 0.7 × 该 child 模型窗口 (与 single 同一解析函数).
+    const eff = agent ? resolveEffectiveUsageBudget(explicitBudget, model ?? agent.model, ctx) : undefined;
+    const usageBudget = eff?.budget;
+    const budgetAuto = eff?.auto;
+    return { item: t, agent, model, timeoutMs, usageBudget, budgetAuto };
   });
 
   // 批次 run.json (调和 12): tasks 快照含各 child agent/model/tools + task (model 取合并后生效值).
@@ -291,6 +296,7 @@ async function runParallelTasks(
       cwd,
       timeoutMs: r.timeoutMs,
       usageBudget: r.usageBudget,
+      budgetAuto: r.budgetAuto,
       signal,
       getContextUsage,
       // 调和 12: per-child 共享批次 runId + run-<idx> 子目录, 不写 per-child run.json.
@@ -480,7 +486,7 @@ export default function (pi: ExtensionAPI) {
 
       // ISSUE-05: tasks[] 并行分支 (M2-D004/M2-D008; per-child 未知 agent 走独立失败, 不阻塞整批).
       if (Array.isArray(params?.tasks) && (params.tasks as unknown[]).length > 0) {
-        return runParallelTasks(params, agents, cwd, _signal, getContextUsage, onUpdate);
+        return runParallelTasks(params, agents, cwd, _signal, getContextUsage, _ctx, onUpdate);
       }
       // 校验层已保证 agent 存在 (缺 agent/未知 agent 均已在 validateExecuteParams 拦截), 此处 find 必命中.
       const agent = agents.find((a) => a.name === (params?.agent as string))!;
@@ -491,10 +497,13 @@ export default function (pi: ExtensionAPI) {
       const timeoutMs = typeof params?.timeoutMs === "number" ? params.timeoutMs : undefined;
       // ISSUE-04: usageBudget 原始值透传 (纯 number 正数由 runSingleAgent 校验层统一兜底报错, 不在此过滤 —
       // 过滤会掩盖 0/负数/NaN/非 number 等非法值, 校验层不可达).
-      const usageBudget = params?.usageBudget as number | undefined;
+      const explicitBudget = params?.usageBudget as number | undefined;
+      // 强制预算 (用户协议): 未显式传 → 自动 0.7 × 子代理模型窗口 (window 查询 modelRegistry, 与父会话同源);
+      // 载荷携带 budget/auto 供父会话诊断 (中止 content 亦报出).
+      const eff = resolveEffectiveUsageBudget(explicitBudget, model ?? agent.model, _ctx);
       // TS-004: 取消监听 (AbortSignal) 透传 — abort → SIGTERM → 3s SIGKILL (M3-01 考察点 4);
       // 本切片: onUpdate 透传 (M3-02 考察点 6 触发点/payload 见 single.ts).
-      return runSingleAgent({ agent, task, model, cwd, timeoutMs, usageBudget, getContextUsage, signal: _signal, onUpdate });
+      return runSingleAgent({ agent, task, model, cwd, timeoutMs, usageBudget: eff.budget, budgetAuto: eff.auto, getContextUsage, signal: _signal, onUpdate });
     },
     // ISSUE-07: TUI 最小渲染 (M1-D001(9)) — renderCall 摘要 + renderResult 折叠/展开 + usage 统计.
     renderCall(args, theme) {

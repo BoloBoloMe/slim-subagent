@@ -19,6 +19,7 @@ import {
   writeAgent,
   resultText,
   cleanup,
+  SKIP_POSIX_SIGNALS,
   type ExecutedResult,
 } from "./helpers.ts";
 
@@ -85,7 +86,7 @@ async function runSingleDrain(
 
 // ---- TS-004 TC-012/TC-013: terminal stop 后 fake 不退出 → drain (1s SIGTERM → 3s SIGKILL), exitCode 归 0 ----
 
-test("TC-012 terminal stop then no exit: ~1s SIGTERM, drain exitCode 0", { timeout: 8000 }, async () => {
+test("TC-012 terminal stop then no exit: ~1s SIGTERM, drain exitCode 0", { timeout: 8000, skip: SKIP_POSIX_SIGNALS }, async () => {
   const home = makeTempHome();
   try {
     writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");
@@ -115,7 +116,7 @@ test("TC-012 terminal stop then no exit: ~1s SIGTERM, drain exitCode 0", { timeo
   }
 });
 
-test("TC-013 SIGTERM ignored: +3s SIGKILL", { timeout: 8000 }, async () => {
+test("TC-013 SIGTERM ignored: +3s SIGKILL", { timeout: 8000, skip: SKIP_POSIX_SIGNALS }, async () => {
   const home = makeTempHome();
   try {
     writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");
@@ -148,7 +149,7 @@ test("TC-013 SIGTERM ignored: +3s SIGKILL", { timeout: 8000 }, async () => {
 
 // ---- TS-004 TC-014: agent_settled 兜底 (无 terminal stop) 同样触发 drain ----
 
-test("TC-014 agent_settled without terminal stop triggers same drain", { timeout: 8000 }, async () => {
+test("TC-014 agent_settled without terminal stop triggers same drain", { timeout: 8000, skip: SKIP_POSIX_SIGNALS }, async () => {
   const home = makeTempHome();
   try {
     writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");
@@ -180,7 +181,7 @@ test("TC-014 agent_settled without terminal stop triggers same drain", { timeout
 
 // ---- TS-004 TC-015: abort 取消 (SIGTERM → error → exitCode 1) ----
 
-test("TC-015 abort: SIGTERM, terminated-by-signal error, exitCode 1", { timeout: 8000 }, async () => {
+test("TC-015 abort: SIGTERM, terminated-by-signal error, exitCode 1", { timeout: 8000, skip: SKIP_POSIX_SIGNALS }, async () => {
   const home = makeTempHome();
   try {
     writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");

@@ -89,6 +89,9 @@ export interface SingleDetails {
   contextPercent?: number | null;
   contextWindow?: number;
   partialOutput?: string; // ISSUE-03: 中止载荷部分输出 (M2-D002(b)), 独立于 finalOutput 文本拼装
+  sessionSaved?: boolean; // 中止载荷: session 文件是否落盘 (resume 硬前提, M5 观察 #3; 仅中止结果产出)
+  usageBudget?: number; // 生效预算 (强制解析后): 显式或自动 70% 窗口 (正常载荷结构字段, 不进 content)
+  budgetAuto?: boolean; // true = 自动 (未显式传 usageBudget), false = 显式
   hint?: string;
   resumed?: boolean; // ISSUE-06: resume 结果标记 (仅 resume 路径置 true, M3-03 考察点 1 移植规格 1)
 }
@@ -108,6 +111,64 @@ export interface StreamUpdateDetails {
 export type StreamUpdateCallback = (partial: AgentToolResult<StreamUpdateDetails>) => void;
 
 // M1-D005: timeout 默认 15min (900000ms).
+// M1-D005: 恢复建议阈值 — 父会话上下文占用 > X% 判定进入 "迟钝区" (建议新起子代理而非 resume).
+// 一处配置 (环境变量覆盖, 默认 30), 全局引用 (hint 分支/长版恢复指令都读本函数): 改一处处处变.
+const RESUME_HINT_PERCENT_ENV = "PI_SUBAGENT_RESUME_HINT_PERCENT";
+const DEFAULT_RESUME_HINT_PERCENT = 30;
+function resumeHintPercent(): number {
+  const raw = process.env[RESUME_HINT_PERCENT_ENV];
+  if (raw === undefined) return DEFAULT_RESUME_HINT_PERCENT;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 1 && n <= 100 ? n : DEFAULT_RESUME_HINT_PERCENT;
+}
+
+// 强制预算 (用户协议): 每次启动子代理自动设 token 用量上限 = 子代理模型上下文窗口 × 比例 (默认 70%).
+// 窗口运行时查 pi modelRegistry (与父会话同源, 含 settings/modelOverrides), 查不到用兜底默认.
+// 标量偏置 (兜底窗口/比例) 用 env 可覆盖, 集中读, 处处引用 (改一处处处变).
+const DEFAULT_MODEL_WINDOW_ENV = "PI_SUBAGENT_DEFAULT_WINDOW";
+const DEFAULT_MODEL_WINDOW = 128000;
+const BUDGET_RATIO_ENV = "PI_SUBAGENT_BUDGET_RATIO";
+const DEFAULT_BUDGET_RATIO = 0.7;
+function defaultModelWindow(): number {
+  const raw = process.env[DEFAULT_MODEL_WINDOW_ENV];
+  if (raw === undefined) return DEFAULT_MODEL_WINDOW;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 1024 ? n : DEFAULT_MODEL_WINDOW;
+}
+function usageBudgetRatio(): number {
+  const raw = process.env[BUDGET_RATIO_ENV];
+  if (raw === undefined) return DEFAULT_BUDGET_RATIO;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 && n < 1 ? n : DEFAULT_BUDGET_RATIO;
+}
+// 子代理模型窗口: ctx.modelRegistry.find("<provider>", "<modelId>") → pi-ai Model.contextWindow.
+// (踩坑: getProvider 返回的 provider 不含 models 列表, 见 M07-RECOVERY-PROTOCOL.md §3.4 — 勿改回 getProvider 路径)
+// 模型寻址 "<provider>/<model>" 与 --model 同形; 任何一步不可得 → 兜底默认窗口.
+export function resolveModelWindow(ctx: unknown, model?: string): number {
+  if (!model) return defaultModelWindow();
+  try {
+    const registry = (ctx as { modelRegistry?: { find?: (provider: string, modelId: string) => unknown } | undefined } | undefined)?.modelRegistry;
+    const slash = model.indexOf("/");
+    const providerId = slash === -1 ? model : model.slice(0, slash);
+    const modelId = slash === -1 ? model : model.slice(slash + 1);
+    // ModelRegistry.find(provider, modelId) → pi-ai Model (含 contextWindow, settings modelOverrides 可覆盖).
+    const m = registry?.find?.(providerId, modelId) as { contextWindow?: number; context_window?: number } | undefined;
+    const w = m?.contextWindow ?? (m as { context_window?: number } | undefined)?.context_window;
+    return typeof w === "number" && w > 0 ? w : defaultModelWindow();
+  } catch {
+    return defaultModelWindow();
+  }
+}
+// 强制预算解析: 显式 usageBudget → 原样 (auto=false); 未传 → 自动 0.7 × 模型窗口 (auto=true).
+// 调用处 (single/parallel/resume) 统一走本函数, 载荷透传 budget/auto 供父会话与诊断.
+export function resolveEffectiveUsageBudget(
+  explicit: number | undefined,
+  model: string | undefined,
+  ctx: unknown,
+): { budget: number; auto: boolean } {
+  if (explicit !== undefined) return { budget: explicit, auto: false };
+  return { budget: Math.max(1, Math.round(resolveModelWindow(ctx, model) * usageBudgetRatio())), auto: true };
+}
 const DEFAULT_TIMEOUT_MS = 900000;
 // M3-01 考察点 3: timeout 三阶段终止信号延迟常量.
 const TIMEOUT_SIGTERM_DELAY_MS = 1000;
@@ -287,7 +348,11 @@ export function getPiInvocation(
 
   // (a) env 覆盖 (PI_SUBAGENT_PI_BINARY) — 最高优先, 测试注入 fake pi 即走此级.
   const envOverride = process.env.PI_SUBAGENT_PI_BINARY?.trim();
-  if (envOverride) return { command: envOverride, args };
+  if (envOverride) {
+    // Windows 无 shebang 机制, .mjs/.js/.cjs 脚本不可直接 spawn → 用当前 node 执行 (POSIX 下行为等价).
+    if (/\.(m|c)?js$/i.test(envOverride)) return { command: execPath, args: [envOverride, ...args] };
+    return { command: envOverride, args };
+  }
 
   // (b) standalone 独立 pi 可执行.
   const execName = path.basename(execPath).toLowerCase();
@@ -1071,6 +1136,40 @@ export async function runProcess(
   });
 }
 
+// 长版恢复指令 (零先验消费方主通道): 悬挂在中止载荷 content 尾部, 给出 判断规则 + 下一步调用步骤.
+// sessionSaved=false (未落盘) → 无法 resume, 直接重发; sessionSaved=true → 按阈值给出恢复/新起建议 + 调用模板.
+// 三步协议 (用户拍板): 1) 继续 → resume 续跑; 2) 判定不再继续启用 → resume 收尾 (终止任务+交接要点);
+// 3) skill:handoff 自动生成交接文档 (文件名含 agent+runId 防重名覆盖) + 新子代理接手.
+function buildRecoveryDirective(opts: {
+  runId: string;
+  agent: string;
+  sessionSaved: boolean;
+  percent: number | null;
+  thresholdPercent: number;
+}): string {
+  const pct = opts.percent;
+  const occupancy =
+    pct === null
+      ? "父会话上下文占用不可得 (按正常区处理)"
+      : pct > opts.thresholdPercent
+        ? `父会话上下文占用 ${pct}% (>${opts.thresholdPercent}% 迟钝区, 建议新起)`
+        : `父会话上下文占用 ${pct}% (≤${opts.thresholdPercent}% 正常区, 建议恢复)`;
+  if (!opts.sessionSaved) {
+    return `${occupancy}; 本 run 未留下可恢复会话 (中止时无完整消息落盘), 无法 resume — 直接以新子代理重发任务.`;
+  }
+  return (
+    `${occupancy}.\n` +
+    `[1] 继续: 若任务目标未变且需继续, 调用 subagent 工具 action="resume", id="${opts.runId}", ` +
+    `task="<重发原任务目标, 可补一句已达成部分>"; 恢复沿用原 model 与已落盘对话, 从最后一条完整消息续跑. ` +
+    `(占用 >${opts.thresholdPercent}% 时新起通常更稳: 干净窗口, 已完成的文件副作用仍在磁盘.)\n` +
+    `[2] 终止交接: 若判定不再继续启用本子代理 (方向已偏/重复触顶/已近完成需换手), 用同一 resume 机制收尾:\n` +
+    `    a) resume 它, task="终止任务: 总结已完成与未完成, 清理临时状态, 输出交接要点";\n` +
+    `    b) 随后用 skill: handoff 自动生成交接文档, 文件名带本会话名防重名覆盖: docs/handoff/YYYY-MM-DD-${opts.agent}-${opts.runId}.md;\n` +
+    `    c) 新起子代理接手, 指引其先读该交接文档与必读推荐.\n` +
+    `[3] 放弃: 忽略本提示即可, 会话目录保留 7 天后自动清理.`
+  );
+}
+
 // ISSUE-06: 结果回收全路径提取 (M3-01 考察点 6 + M3-02 考察点 4 + ISSUE-03/04 诊断载荷收口) —
 // single 与 resume 共用 (恢复 spawn 复用 single 结果回收, ISSUE-06 风险提示).
 export function assembleSingleResult(
@@ -1078,6 +1177,10 @@ export function assembleSingleResult(
   opts: {
     runId: string;
     sessionDir: string;
+    sessionFile: string;
+    agent: string;
+    usageBudget?: number; // 生效预算 (强制解析后): 显式或自动 70% 窗口
+    budgetAuto?: boolean; // true = 自动 (未显式传 usageBudget), false = 显式
     getContextUsage?: () => { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
     resumed?: boolean; // ISSUE-06: resume 结果标记
   },
@@ -1114,8 +1217,8 @@ export function assembleSingleResult(
       // M3-05 规则 2: getContextUsage().tokens 可得时优先于 message totalTokens.
       if (typeof cu.tokens === "number") contextTokens = cu.tokens;
       if (isAborted && cu.percent !== null && cu.percent !== undefined) {
-        hint = cu.percent > 50
-          ? "上下文窗口占用较高, 建议新起子代理而非 resume."
+        hint = cu.percent > resumeHintPercent()
+          ? "上下文窗口占用较高 (超过迟钝区阈值), 建议新起子代理而非 resume."
           : "建议 resume 恢复任务, 复用已产生的部分输出.";
       }
     }
@@ -1128,9 +1231,25 @@ export function assembleSingleResult(
 
   // M6 修复 1 (用户裁决): pi 只把 content 喂给模型, details 仅供 TUI — 中止结果把 details 关键字段拼进 content,
   // 否则模型拿不到 runId/diagnostics/hint (M1-D005 诊断载荷目的落空). 正常结果 content 保持纯净不拼.
+  // 长版指令: 中止载荷自带 判断规则 + 恢复调用步骤 (零先验消费方主通道, text 模式下 details 不可见).
+  const sessionSaved = isAborted ? fs.existsSync(opts.sessionFile) : false; // resume 硬前提: session 已落盘 (M5 观察 #3)
+  // 预算行后缀: ratio 从 env 解析函数取 (与计算同源, 改 env 文案跟随); budgetAuto 缺省 (库直调未传) → 不标来源.
+  const budgetSuffix =
+    opts.budgetAuto === true
+      ? ` (自动 = ${Math.round(usageBudgetRatio() * 100)}% × 模型窗口)`
+      : opts.budgetAuto === false
+        ? " (显式)"
+        : "";
   const textOut = isAborted
     ? text +
-      `\n\n---\nrunId: ${opts.runId} (恢复: action:"resume", id 用此值; 从头报前缀或报随机尾段均可)\nsessionDir: ${opts.sessionDir}\nusage: input ${result.usage.input} / output ${result.usage.output} / cacheWrite ${result.usage.cacheWrite} (cacheRead 不计入)\n上下文: ${contextPercent ?? "未知"}% (${contextTokens ?? "未知"} tokens${result.model ? `, ${result.model}` : ""})\nhint: ${hint}`
+      `\n\n---\nrunId: ${opts.runId} (恢复: action:"resume", id 用此值; 从头报前缀或报随机尾段均可)\nsessionDir: ${opts.sessionDir}\nusage: input ${result.usage.input} / output ${result.usage.output} / cacheWrite ${result.usage.cacheWrite} (cacheRead 不计入)\n预算: ${opts.usageBudget ?? "未设"} tokens${budgetSuffix}\n上下文: ${contextPercent ?? "未知"}% (${contextTokens ?? "未知"} tokens${result.model ? `, ${result.model}` : ""})\nhint: ${hint}\n` +
+      buildRecoveryDirective({
+        runId: opts.runId,
+        agent: opts.agent,
+        sessionSaved,
+        percent: contextPercent,
+        thresholdPercent: resumeHintPercent(),
+      })
     : text;
 
   return {
@@ -1150,6 +1269,9 @@ export function assembleSingleResult(
       contextWindow,
       partialOutput: result.partialOutput,
       hint,
+      ...(opts.usageBudget !== undefined ? { usageBudget: opts.usageBudget } : {}),
+      ...(opts.budgetAuto !== undefined ? { budgetAuto: opts.budgetAuto } : {}),
+      ...(isAborted ? { sessionSaved } : {}),
       ...(opts.resumed ? { resumed: true } : {}),
     },
     isError: isError || undefined,
@@ -1163,6 +1285,7 @@ export async function runSingleAgent(opts: {
   cwd: string; // 子代理工作目录, 默认继承父会话 (M2-D008 参数 7)
   timeoutMs?: number; // ISSUE-03: 超时毫秒, 正整数, 缺省 900000 (15min)
   usageBudget?: number; // ISSUE-04: token 上限 (纯 number 正数, 触顶中止; 非法值校验报错)
+  budgetAuto?: boolean; // 强制预算: true = 自动 (0.7 × 模型窗口), false = 显式传参
   signal?: AbortSignal; // TS-004: 取消监听 (M3-01 考察点 4: abort → SIGTERM → 3s SIGKILL)
   getContextUsage?: () => { tokens: number | null; contextWindow: number; percent: number | null } | undefined; // ISSUE-03: ctx.getContextUsage 用于诊断
   onUpdate?: StreamUpdateCallback; // M3-02 考察点 6: 流式更新回调 (spawn/message_end/tool_result_end/close 触发点)
@@ -1219,7 +1342,15 @@ export async function runSingleAgent(opts: {
     const args = buildPiArgs({ agent: opts.agent, task: opts.task, model: effectiveModel, sessionFile, promptFile, tmpDir });
     const result = await runProcess(opts.agent, opts.task, args, opts.cwd, opts.timeoutMs, opts.signal, usageBudget, opts.onUpdate);
 
-    return assembleSingleResult(result, { runId, sessionDir, getContextUsage: opts.getContextUsage });
+    return assembleSingleResult(result, {
+      runId,
+      sessionDir,
+      sessionFile,
+      agent: opts.agent.name,
+      usageBudget: opts.usageBudget,
+      budgetAuto: opts.budgetAuto,
+      getContextUsage: opts.getContextUsage,
+    });
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true }); // temp prompt 文件 close 后清理 (ISSUE-02 风险提示)
   }

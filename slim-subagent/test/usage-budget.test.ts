@@ -17,6 +17,7 @@ import {
   writeAgent,
   resultText,
   cleanup,
+  SKIP_POSIX_SIGNALS,
   type ExecutedResult,
 } from "./helpers.ts";
 
@@ -36,6 +37,8 @@ type SingleDetails = {
   contextWindow?: number;
   partialOutput?: string;
   hint?: string;
+  usageBudget?: number;
+  budgetAuto?: boolean;
 };
 
 // 临时 HOME 隔离 + fake pi 跑一次 single execute; 支持注入 usageBudget / timeoutMs / budget 场景开关.
@@ -140,7 +143,7 @@ test("TC-001 usage budget aborts mid-flight at pinned threshold", async () => {
   }
 });
 
-test("TC-002 usage budget signal sequence: SIGINT@0 → SIGTERM@+~1s → SIGKILL@+~4s", async () => {
+test("TC-002 usage budget signal sequence: SIGINT@0 → SIGTERM@+~1s → SIGKILL@+~4s", { skip: SKIP_POSIX_SIGNALS }, async () => {
   // 真实信号时序断言 (宽松区间, 同 ISSUE-03 TC-002 手法): hang=1 → 触顶后 fake 不退
   // (接住 SIGINT/SIGTERM 继续跑), 由 budget 管线 SIGKILL 杀死; 心跳最后一条 ≈ SIGKILL 时刻.
   const home = makeTempHome();
@@ -264,7 +267,7 @@ test("TC-004 cacheWrite counted with >= boundary", async () => {
   }
 });
 
-test("TC-005 no usageBudget param → no budget behavior, no traces", async () => {
+test("TC-005 no usageBudget param → auto budget (0.7 × fallback window), no abort, content pure", async () => {
   const home = makeTempHome();
   try {
     writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");
@@ -275,7 +278,10 @@ test("TC-005 no usageBudget param → no budget behavior, no traces", async () =
     assert.equal(details.exitCode, 0);
     assert.equal(details.error, undefined, "正常载荷不得带 budget 错误痕迹");
     assert.equal(details.hint, undefined, "正常载荷不得带 hint");
-    assert.equal(resultText(result), "Hello from fake assistant");
+    assert.equal(resultText(result), "Hello from fake assistant", "正常完成 content 保持纯净");
+    // 强制预算 (M07): 未显式传 → 自动 0.7 × 兜底窗口 (ctx 无 modelRegistry → 128000) = 89600, 进 details 不进 content.
+    assert.equal(details.usageBudget, 89600, "自动预算应为 0.7 × 兜底窗口");
+    assert.equal(details.budgetAuto, true, "未显式传应标 auto");
   } finally {
     cleanup(home);
   }
@@ -301,7 +307,7 @@ test("TC-007 usageBudget zero/negative/NaN/Infinity/non-number fails validation"
 
 // ---- TS-003: 竞态 (M1-D005/D006 交互) ----
 
-test("TC-006 first abort reason wins: timeout before budget → timeout", async () => {
+test("TC-006 first abort reason wins: timeout before budget → timeout", { skip: SKIP_POSIX_SIGNALS }, async () => {
   const home = makeTempHome();
   try {
     writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");
