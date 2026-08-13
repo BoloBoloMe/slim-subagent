@@ -46,7 +46,7 @@ async function runSingleWithBundle(
   }
 }
 
-test("TC-001 builtin agents discoverable with pinned tools and no model", async () => {
+test("TC-001 builtin agents discoverable with full tools and no model", async () => {
   const home = makeTempHome();
   try {
     // 名册 (空 user 目录 → 纯内置): 3 个内置 agent 均可见且描述非空 (M1-D008).
@@ -60,12 +60,12 @@ test("TC-001 builtin agents discoverable with pinned tools and no model", async 
       assert.ok(line, `名册应含内置 agent ${name}`);
       assert.ok(line!.slice(`- ${name}: `.length).trim() !== "", `${name} 描述非空`);
     }
-    // 数据面 (M1-D008 + 调和 10): tools 工具面固定; 均不带 model 字段; body (system prompt) 非空.
+    // 数据面 (M1-D008 + 调和 10): 均无 tools 字段 (全工具, spawn 不加 --tools); 均不带 model 字段; body (system prompt) 非空.
     const builtin = discoverAgents().filter((a) => ["explorer", "reviewer", "worker"].includes(a.name));
     assert.equal(builtin.length, 3);
-    assert.equal(builtin.find((a) => a.name === "explorer")?.tools?.join(","), "read,grep,find,ls,bash,resolve_skill");
-    assert.equal(builtin.find((a) => a.name === "worker")?.tools, undefined, "worker 无 tools 字段 = 全工具");
-    assert.equal(builtin.find((a) => a.name === "reviewer")?.tools?.join(","), "read,grep,find,ls,bash,resolve_skill");
+    for (const name of ["explorer", "reviewer", "worker"]) {
+      assert.equal(builtin.find((a) => a.name === name)?.tools, undefined, `${name} 无 tools 字段 = 全工具`);
+    }
     for (const a of builtin) {
       assert.equal(a.model, undefined, `内置 agent ${a.name} 不带 model 字段 (调和 10)`);
       assert.ok(a.systemPrompt.trim().length > 0, `${a.name} body (system prompt) 非空`);
@@ -75,14 +75,13 @@ test("TC-001 builtin agents discoverable with pinned tools and no model", async 
   }
 });
 
-test("TC-002 explorer spawns with --tools read,grep,find,ls,bash,resolve_skill and no --model", async () => {
+test("TC-002 explorer spawns without --tools (全工具) and no --model", async () => {
   const home = makeTempHome();
   try {
     const { result, bundle } = await runSingleWithBundle(home, { agent: "explorer", task: "探查项目结构" });
     assert.equal(result.isError, undefined);
     const args = bundle.argv;
-    assert.ok(args.includes("--tools"), "explorer argv 应含 --tools");
-    assert.equal(args[args.indexOf("--tools") + 1], "read,grep,find,ls,bash,resolve_skill");
+    assert.ok(!args.includes("--tools"), "explorer 无 tools 字段 → 省略 --tools (全工具)");
     assert.ok(!args.includes("--model"), "内置 agent 无 model → 省略 --model (调和 10)");
     assert.ok(!args.includes("-e"), "临时 HOME 无 resolve-skill 扩展 → argv 无 -e (静默跳过)");
     assert.ok(bundle.prompt && bundle.prompt.content.trim().length > 0, "explorer system prompt 应注入");
@@ -127,7 +126,7 @@ test("TC-003 worker spawns with no --tools and no --model", async () => {
 });
 
 // EXECUTION.md 调和 16: 同名 agent 冲突 = user 覆盖内置 — spawn 解析到 user 版
-// (tools/model/prompt 取 user 定义; 本测试 user explorer 仅改 tools, argv --tools 应取 user 值而非内置 read,grep,find,ls,bash).
+// (tools/model/prompt 取 user 定义; 本测试 user explorer 加 tools, argv --tools 应取 user 值 — 内置版无 tools 字段).
 test("TC-005 same-name user agent wins spawn resolution (调和 16)", async () => {
   const home = makeTempHome();
   try {

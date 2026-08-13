@@ -444,7 +444,7 @@ export default function (pi: ExtensionAPI) {
       "并行适合只读工作 (审查/研究) 或写互不重叠产物的任务; 改动共享文件 (项目代码/配置) 须串行单写.",
       // 内置名册: 职能词 + 选型轴, 完整描述由 agents/*.md frontmatter 承担 (单一真相源);
       // reviewer 委派注意点 (须指定对象/范围/方向) 是描述里没有的操作知识, 必须内联.
-      "内置 agents: explorer (只读探查, 返回带出处的发现), worker (全工具, 写/执行任务), reviewer (只读审查, 证据分级报告; 委派须指定被审对象/范围/方向).",
+      "内置 agents (均全工具, 职能分工): explorer (探查, 返回带出处的发现, 可写研究报告), worker (写/执行任务), reviewer (审查, 证据分级报告, 可写审核文档; 委派须指定被审对象/范围/方向). explorer/reviewer 可写产物但不修改被委派对象, 不执行变更.",
     ],
     parameters: SubagentParams,
     async execute(
