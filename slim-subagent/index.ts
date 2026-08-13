@@ -30,10 +30,10 @@ const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
 
-// 工具描述 (v5): 接口形状 + 选用时机/理由; 行为规范全在 promptGuidelines; 结果自带的信息 (如中止文本里的 resume 指引) 不在此缓存.
+// 工具描述: 阻塞语义 + 接口速记 + list/resume 操作语义 (schema 参数描述里没有的);
+// 委派偏置 (独立且值得 / 默认委派 / 主会话职责) 由 promptSnippet 承担, 不重复.
 const TOOL_DESCRIPTION =
-  "把可独立的任务优先委派给子代理, 保持主会话上下文精简; 调用后阻塞等待结果. " +
-  "单次: agent + task. 并行: tasks[]. action:\"list\" 发现 agents; \"resume\" + id 恢复中止的运行.";
+  "调用后阻塞等待结果. 单次: agent + task; 并行: tasks[]; action:\"list\" 发现 agents; \"resume\" + id 恢复中止的运行.";
 
 // M2-D008 参数 3: tasks item 结构.
 const TaskItem = Type.Object({

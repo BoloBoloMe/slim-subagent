@@ -9,10 +9,9 @@ import extensionFactory from "../index.ts";
 // M2-D008 钉死的 9 个参数名
 const PINNED_PARAMS = ["agent", "task", "tasks", "model", "timeoutMs", "usageBudget", "cwd", "action", "id"];
 
-// 工具描述钉版原文 (v5: 恢复 v3 的 "优先" 委派偏置, 行为规范全在 guidelines; 逐字含标点)
+// 工具描述钉版原文 (v6: 删与 snippet 重复的委派偏置句, 只留阻塞语义 + 接口速记 + list/resume 操作语义)
 const PINNED_DESCRIPTION =
-  '把可独立的任务优先委派给子代理, 保持主会话上下文精简; 调用后阻塞等待结果. ' +
-  '单次: agent + task. 并行: tasks[]. action:"list" 发现 agents; "resume" + id 恢复中止的运行.';
+  '调用后阻塞等待结果. 单次: agent + task; 并行: tasks[]; action:"list" 发现 agents; "resume" + id 恢复中止的运行.';
 
 function captureRegistration(): {
   name: string;
