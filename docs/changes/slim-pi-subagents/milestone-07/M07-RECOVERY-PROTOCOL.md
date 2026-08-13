@@ -76,7 +76,7 @@
 
 1. ~~单测 (node --test) 本机 Windows 全红~~ **已修 (2026-08-13 审核)**: (a) helpers.ts withHome 同时覆盖 %USERPROFILE% (Windows 上 os.homedir() 的实际读源); (b) getPiInvocation env 覆盖分支对 .mjs/.js/.cjs 用当前 node 执行 (Windows 无 shebang, spawn EFTYPE); (c) 依赖 POSIX 信号语义的 11 例 (drain TC-012~015 / single-line-limit TC-LIMIT-001/004/005 / timeout TC-002 / usage-budget TC-002/TC-006) Windows 跳过 (helpers.SKIP_POSIX_SIGNALS); (d) single-address TC-A1 Windows 跳过 (symlink EPERM); (e) single-spawn-args TC-004 的 0600 权限断言仅 POSIX. 全套件绿: 78 pass / 0 fail / 11 skip.
 2. 子代理模型 `deepseek/deepseek-v4-flash` 的 DEEPSEEK_API_KEY 已失效 (401), 真实慢任务 e2e 用 `ai-work-qwen/qwen3.8-max` 完成; 复跑中止场景需换 key 有效模型.
-3. 完整三步 e2e (中止 → resume 收尾 → handoff 落盘 → 新子代理接手) 未实跑 (成本), 逻辑由载荷文本验证, 行为链路待新会话审核代码后补.
+3. ~~完整三步 e2e (中止 → resume 收尾 → handoff 落盘 → 新子代理接手) 未实跑~~ **已实跑 (2026-08-13, 见 M07-TEST-GUIDE.md §4.1 用例 F)**: 全链路走通, resume 收尾 resumed=true + 强制预算 700000/auto=true + 沿用原 runId/sessionDir, handoff 落盘, 新子代理读交接完成原任务.
 4. `test/timeout.test.ts` 已改 (阈值用例 25/39/env50 + sessionSaved 断言), 本机全绿 (见 1).
 5. 审核修补 (2026-08-13, 与契约无冲突): (a) 中止 content 预算行百分比改为从 `usageBudgetRatio()` 插值 (原硬编码 "70%", env 覆盖 ratio 时文案失步); (b) `resolveModelWindow` 上方注释从失败的 getProvider 路径更正为 find; (c) budgetAuto 未传时预算行不再误标 "(显式)"; (d) 新增 TC-004c (ratio env 覆盖 → 预算行数值与百分比同步), TC-005 更新为强制预算语义 (未传 → 自动 89600/budgetAuto=true).
 
