@@ -23,6 +23,8 @@
 
 **方向侦查结论**: 选定**混合路线** (R1 排雷 + 契约修订开路 → 原型驱动敲定交互 → 定稿 → 实现走廊 → 验收交付). 未选方向排除理由: 纯原型驱动会带着有毒契约进原型; 纯契约先行把 TUI 交互决策推给纸面 (体验死区); 纯风险倒序 8/12 风险已闭环, 串行排雷是浪费.
 
+**补充决策** (2026-08-14, 用户补充需求, 落 M02 第 6 条): DisplayStatus 加 `pending` — 仅 parallel child 可推导 (tasks[] 全集 − L30 scheduled 集合), 预建行, 进 worker 转 active; 失败原因展示限运行层 (可观测), 语义层"未达到目标"不做自动判断. 波及 M04/M11/M12.
+
 **固定偏好**: 中文回复/文档 (非译项除外), 半角标点, `uv run python`.
 
 **遍历时应查阅的 skill**: prototype (HITL) → `prototype` skill; deliberate → `deliberate` skill, 产物根目录 `docs/changes/subagent-panel/milestone-NN/`; AFK 编码任务 → `tdd-as-orchestra` skill.
@@ -45,7 +47,8 @@
 ## 范围外
 
 - **patch / fork pi 本体** — 扩展 API 覆盖面足够, 缺口记限制. 排除原因: 目的地边界, 用户已确认.
-- **PRD §11 全清单** — 无限子代理树可视化 / parallel resume / queued·waiting_input 一等状态 / skill 独立分类 / Diagnose 自动修复 / 日志做 metrics 后端 / 从磁盘反推运行中状态 / list 名册面板化. 排除原因: PRD 已明确不做, 与目的地无关.
+- **PRD §11 全清单 (修正版)** — 无限子代理树可视化 / parallel resume / waiting_input 等运行时无事件的一等状态 (queued 禁令收窄: parallel child 的 `pending` 已纳入范围, 见补充决策) / skill 独立分类 / Diagnose 自动修复 / 日志做 metrics 后端 / 从磁盘反推运行中状态 / list 名册面板化. 排除原因: PRD 已明确不做, 与目的地无关.
+- **语义层"未达到目标"自动判断** — 运行时无信号可观测结果质量, 需引入 LLM 评审, 超出可观测性范围. 排除原因: 用户已确认边界, 属另一个产品.
 
 ## 阻塞关系
 
