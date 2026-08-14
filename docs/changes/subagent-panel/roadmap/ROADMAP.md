@@ -16,6 +16,7 @@
 - `ctx.ui.setWidget(key, lines|factory, {placement:"aboveEditor"|"belowEditor"})` 持久面板存在; `setFooter/setStatus/setHeader` 存在; `registerCommand` 存在.
 - Session Viewer 类视图须 overlay + 自绘滚动 (pi-tui 无 ScrollView/Tab 组件); Esc=done(null).
 - `/reload` 秒级热载, jiti 免编译; 钩子齐全 (session_start, tool_call/tool_result 拦截等).
+- overlay 实测 (M01, 26/26 断言): nonCapturing 可承载 D 形态; **打开必须非阻塞** (fire-and-forget / registerShortcut handler, 命令内 `await ctx.ui.custom` 冻结主交互循环); 非捕获浮层收不到键盘, 关闭靠外部 `handle.hide()` 或自触发 `done()`; capturing 浮层吞全部键盘; session 事件只走 `pi.on()` typed handler, **不走 `pi.events` 总线**. 详见 `../milestone-01/overlay-coexistence-research.md`.
 
 **契约审计结论** (4 处 PRD 缺口, M02 处理): contextPercent 语义错位 (现为父会话占用) / final details 缺 agent·task·timeoutMs / endedAtMs 无记录 / L16 无对应触发点 + L13/L14 需定界 / R5 final details 缺 mode 致节点键漂移. 48 日志点 44 个挂载点已存在, Diagnose 9 类证据链闭环.
 
@@ -33,16 +34,16 @@
 
 <!-- 每个已关闭 Milestone 一行: 链接 + 一句话摘要 -->
 
+- [MILESTONE-01](MILESTONE-01.md) — R1 排雷通过: nonCapturing overlay 与 streaming/dialog/焦点共存 26/26 实测合格, D 形态可承载; 硬约束=打开须非阻塞 + 关闭靠外部句柄/自触发. 报告: [overlay-coexistence-research.md](../milestone-01/overlay-coexistence-research.md). 迷雾 F2 条件 (R1 负面) 未触发, 消散.
+
 ## 前沿
 
-- [MILESTONE-01](MILESTONE-01.md) — `research` — R1 overlay 共存排雷实验
 - [MILESTONE-02](MILESTONE-02.md) — `deliberate` — 数据/日志契约修订 (5 处 PRD 缺口)
 - [MILESTONE-03](MILESTONE-03.md) — `task` — 原型骨架: scratch 扩展 + 假数据回放器
 
 ## 未决迷雾
 
 - **F1 · parallel per-child 实时进度**: 审计坐实 parallel 不透传 onUpdate (`progress: []` 硬编码, index.ts:275). 升级只需改本仓库 runParallelTasks, PRD 现列非 MUST. M04 原型轮摸到手感后回访 — 若升级, 裂出改造里程碑插入实现走廊 (影响 M10–M12); 也可能确认不做.
-- **F2 · R1 负面时 D 的备选形态**: 若 M01 实测 overlay 共存有坑, D 改走哪条路 (widget 常驻 + 命令开 overlay? 放弃全屏?) 等 M01 结论, 同时影响 M06 与 M13.
 
 ## 范围外
 
@@ -53,9 +54,8 @@
 ## 阻塞关系
 
 ```
-M01 ─┐
-     ├─→ M06 ─┐
-M03 ─┼─→ M04 ─┤
+M03 ─┬─→ M06 ─┐
+     ├─→ M04 ─┤
      └─→ M05 ─┤
 M02 ──────────┴─→ M07 ─→ M08 ─→ M09 ─→ M10 ─→ M11 ─┬─→ M12 ─┐
                                                    ├─→ M13 ─┤
@@ -63,7 +63,7 @@ M02 ──────────┴─→ M07 ─→ M08 ─→ M09 ─→ M10
                                                    └─→ M15 ─┘
 ```
 
-- M06 阻塞于 M01, M03; M07 阻塞于 M02, M04, M05, M06; M08 阻塞于 M07.
+- M06 阻塞于 M03 (M01 已关闭); M07 阻塞于 M02, M04, M05, M06; M08 阻塞于 M07.
 - M09–M11 串行; M12–M15 并行阻塞于 M11; M15 另需 M07 决策升级 (条件里程碑, 不升级则关闭记因).
 - M16 阻塞于 M12, M13, M14, M15.
-- F1 若转化, 插入 M10–M12 之间; F2 若转化, 影响 M06/M13.
+- F1 若转化, 插入 M10–M12 之间.
