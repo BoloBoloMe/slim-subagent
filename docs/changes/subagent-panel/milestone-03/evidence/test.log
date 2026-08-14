@@ -1,0 +1,7 @@
+{"event": "phase.A.start", "ts": 1786725122.3709712}
+{"event": "phase.B.start", "ts": 1786725127.38687}
+{"event": "phase.C.start", "ts": 1786725132.4055474}
+{"event": "phase.C.end", "ts": 1786725139.1451185}
+{"event": "phase.D.start", "ts": 1786725139.1453297}
+{"event": "phase.D.loaded", "latencyMs": 902.205228805542, "t0": 1786725139.146455, "t1": 1786725140.0486603}
+{"event": "summary", "passed": 25, "total": 25}

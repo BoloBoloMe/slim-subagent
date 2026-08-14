@@ -1,0 +1,28 @@
+{"event":"ext.loaded","marker":"proto-v1","pid":472773,"ts":1786725117416,"logFile":"/tmp/subagent-panel-proto/replay.log"}
+{"event":"replay.step","source":"command","marker":"proto-v1","mode":"single","scenario":"success","stepIndex":0,"kind":"initial","atMs":0,"ts":1786725122392,"text":"(running...)"}
+{"event":"replay.step","source":"command","marker":"proto-v1","mode":"single","scenario":"success","stepIndex":1,"kind":"message_end","atMs":700,"ts":1786725123091,"text":"开始分析目录结构..."}
+{"event":"replay.step","source":"command","marker":"proto-v1","mode":"single","scenario":"success","stepIndex":2,"kind":"tool_start","atMs":1400,"ts":1786725123791,"text":"read src/index.ts"}
+{"event":"replay.step","source":"command","marker":"proto-v1","mode":"single","scenario":"success","stepIndex":3,"kind":"tool_end","atMs":1900,"ts":1786725124291,"text":"read src/index.ts 完成"}
+{"event":"replay.step","source":"command","marker":"proto-v1","mode":"single","scenario":"success","stepIndex":4,"kind":"tool_result_end","atMs":2500,"ts":1786725124891,"text":"(running...)"}
+{"event":"replay.step","source":"command","marker":"proto-v1","mode":"single","scenario":"success","stepIndex":5,"kind":"message_end","atMs":3100,"ts":1786725125490,"text":"已读取 src/index.ts, 找到 3 个候选入口..."}
+{"event":"replay.step","source":"command","marker":"proto-v1","mode":"single","scenario":"success","stepIndex":6,"kind":"close","atMs":3800,"ts":1786725126192,"text":"任务完成: 找到 3 个候选入口"}
+{"event":"replay.step","source":"command","marker":"proto-v1","mode":"parallel","scenario":"success","stepIndex":0,"kind":"initial","atMs":0,"ts":1786725127398,"text":"Parallel: 0/4 done, 4 running..."}
+{"event":"replay.step","source":"command","marker":"proto-v1","mode":"parallel","scenario":"success","stepIndex":1,"kind":"message_end","atMs":1500,"ts":1786725128896,"text":"Parallel: 1/4 done, 3 running..."}
+{"event":"replay.step","source":"command","marker":"proto-v1","mode":"parallel","scenario":"success","stepIndex":2,"kind":"message_end","atMs":2300,"ts":1786725129696,"text":"Parallel: 2/4 done, 2 running..."}
+{"event":"replay.step","source":"command","marker":"proto-v1","mode":"parallel","scenario":"success","stepIndex":3,"kind":"message_end","atMs":3200,"ts":1786725130596,"text":"Parallel: 3/4 done, 1 running..."}
+{"event":"replay.step","source":"command","marker":"proto-v1","mode":"parallel","scenario":"success","stepIndex":4,"kind":"close","atMs":4000,"ts":1786725131396,"text":"Parallel: 4/4 done, batch finished."}
+{"event":"replay.step","source":"tool","marker":"proto-v1","mode":"single","scenario":"success","stepIndex":0,"kind":"initial","atMs":0,"ts":1786725133259,"text":"(running...)"}
+{"event":"replay.step","source":"tool","marker":"proto-v1","mode":"single","scenario":"success","stepIndex":1,"kind":"message_end","atMs":700,"ts":1786725133959,"text":"开始分析目录结构..."}
+{"event":"replay.step","source":"tool","marker":"proto-v1","mode":"single","scenario":"success","stepIndex":2,"kind":"tool_start","atMs":1400,"ts":1786725134658,"text":"read src/index.ts"}
+{"event":"replay.step","source":"tool","marker":"proto-v1","mode":"single","scenario":"success","stepIndex":3,"kind":"tool_end","atMs":1900,"ts":1786725135159,"text":"read src/index.ts 完成"}
+{"event":"replay.step","source":"tool","marker":"proto-v1","mode":"single","scenario":"success","stepIndex":4,"kind":"tool_result_end","atMs":2500,"ts":1786725135759,"text":"(running...)"}
+{"event":"replay.step","source":"tool","marker":"proto-v1","mode":"single","scenario":"success","stepIndex":5,"kind":"message_end","atMs":3100,"ts":1786725136359,"text":"已读取 src/index.ts, 找到 3 个候选入口..."}
+{"event":"replay.step","source":"tool","marker":"proto-v1","mode":"single","scenario":"success","stepIndex":6,"kind":"close","atMs":3800,"ts":1786725137058,"text":"任务完成: 找到 3 个候选入口"}
+{"event":"ext.loaded","marker":"proto-v2","pid":472773,"ts":1786725139203,"logFile":"/tmp/subagent-panel-proto/replay.log"}
+{"event":"replay.step","source":"command","marker":"proto-v2","mode":"single","scenario":"success","stepIndex":0,"kind":"initial","atMs":0,"ts":1786725141058,"text":"(running...)"}
+{"event":"replay.step","source":"command","marker":"proto-v2","mode":"single","scenario":"success","stepIndex":1,"kind":"message_end","atMs":700,"ts":1786725141756,"text":"开始分析目录结构..."}
+{"event":"replay.step","source":"command","marker":"proto-v2","mode":"single","scenario":"success","stepIndex":2,"kind":"tool_start","atMs":1400,"ts":1786725142457,"text":"read src/index.ts"}
+{"event":"replay.step","source":"command","marker":"proto-v2","mode":"single","scenario":"success","stepIndex":3,"kind":"tool_end","atMs":1900,"ts":1786725142957,"text":"read src/index.ts 完成"}
+{"event":"replay.step","source":"command","marker":"proto-v2","mode":"single","scenario":"success","stepIndex":4,"kind":"tool_result_end","atMs":2500,"ts":1786725143557,"text":"(running...)"}
+{"event":"replay.step","source":"command","marker":"proto-v2","mode":"single","scenario":"success","stepIndex":5,"kind":"message_end","atMs":3100,"ts":1786725144156,"text":"已读取 src/index.ts, 找到 3 个候选入口..."}
+{"event":"replay.step","source":"command","marker":"proto-v2","mode":"single","scenario":"success","stepIndex":6,"kind":"close","atMs":3800,"ts":1786725144857,"text":"任务完成: 找到 3 个候选入口"}
