@@ -35,11 +35,14 @@
 <!-- 每个已关闭 Milestone 一行: 链接 + 一句话摘要 -->
 
 - [MILESTONE-01](MILESTONE-01.md) — R1 排雷通过: nonCapturing overlay 与 streaming/dialog/焦点共存 26/26 实测合格, D 形态可承载; 硬约束=打开须非阻塞 + 关闭靠外部句柄/自触发. 报告: [overlay-coexistence-research.md](../milestone-01/overlay-coexistence-research.md). 迷雾 F2 条件 (R1 负面) 未触发, 消散.
+- [MILESTONE-03](MILESTONE-03.md) — 原型骨架就绪: scratch 扩展 `~/.pi/agent/extensions/subagent-panel-proto/` + 假工具 `subagent_proto` (single 7 步/parallel 5 步回放, 时序对照 single.ts:811-904 与 index.ts:265-275), pty 实测 25/25 通过, `/reload` 热载 902ms 生效; `types.ts` 契约 M04+ 直接复用. 报告: [milestone-03-report.md](../milestone-03/milestone-03-report.md).
 
 ## 前沿
 
 - [MILESTONE-02](MILESTONE-02.md) — `deliberate` — 数据/日志契约修订 (5 处 PRD 缺口)
-- [MILESTONE-03](MILESTONE-03.md) — `task` — 原型骨架: scratch 扩展 + 假数据回放器
+- [MILESTONE-04](MILESTONE-04.md) — `prototype` — A · Inline Run Card 原型 (renderCall/renderResult 三态)
+- [MILESTONE-05](MILESTONE-05.md) — `prototype` — B/C · Widget 面板 + Footer 摘要原型
+- [MILESTONE-06](MILESTONE-06.md) — `prototype` — D · Session Viewer 原型 (overlay 多 tab)
 
 ## 未决迷雾
 
@@ -54,16 +57,15 @@
 ## 阻塞关系
 
 ```
-M03 ─┬─→ M06 ─┐
-     ├─→ M04 ─┤
-     └─→ M05 ─┤
-M02 ──────────┴─→ M07 ─→ M08 ─→ M09 ─→ M10 ─→ M11 ─┬─→ M12 ─┐
-                                                   ├─→ M13 ─┤
-                                                   ├─→ M14 ─┼─→ M16 ─→ ◆ 实际交付
-                                                   └─→ M15 ─┘
+M02 ─┐
+M04 ─┤
+M05 ─┼─→ M07 ─→ M08 ─→ M09 ─→ M10 ─→ M11 ─┬─→ M12 ─┐
+M06 ─┘                                    ├─→ M13 ─┤
+                                          ├─→ M14 ─┼─→ M16 ─→ ◆ 实际交付
+                                          └─→ M15 ─┘
 ```
 
-- M06 阻塞于 M03 (M01 已关闭); M07 阻塞于 M02, M04, M05, M06; M08 阻塞于 M07.
+- M07 阻塞于 M02, M04, M05, M06; M08 阻塞于 M07.
 - M09–M11 串行; M12–M15 并行阻塞于 M11; M15 另需 M07 决策升级 (条件里程碑, 不升级则关闭记因).
 - M16 阻塞于 M12, M13, M14, M15.
 - F1 若转化, 插入 M10–M12 之间.
