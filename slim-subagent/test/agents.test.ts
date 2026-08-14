@@ -61,15 +61,18 @@ test("TC-001 builtin agents discoverable with full tools and default model", asy
       assert.ok(line!.slice(`- ${name}: `.length).trim() !== "", `${name} 描述非空`);
     }
     // 数据面 (M1-D008): 均无 tools 字段 (全工具, spawn 不加 --tools); 均带默认 model (frontmatter 统一 deepseek/deepseek-v4-flash);
-    // 无 thinking 字段 (不钉默认深度, 走模型/pi 默认); body (system prompt) 非空.
+    // 默认 thinking: explorer/worker=high, reviewer=max (deepseek 仅 off/high/max 可用, off 排除); body (system prompt) 非空.
     const builtin = discoverAgents().filter((a) => ["explorer", "reviewer", "worker"].includes(a.name));
     assert.equal(builtin.length, 3);
     for (const name of ["explorer", "reviewer", "worker"]) {
       assert.equal(builtin.find((a) => a.name === name)?.tools, undefined, `${name} 无 tools 字段 = 全工具`);
     }
+    const thinkingOf = (name: string) => builtin.find((a) => a.name === name)?.thinking;
+    assert.equal(thinkingOf("explorer"), "high", "explorer 默认 thinking=high");
+    assert.equal(thinkingOf("worker"), "high", "worker 默认 thinking=high");
+    assert.equal(thinkingOf("reviewer"), "max", "reviewer 默认 thinking=max");
     for (const a of builtin) {
       assert.equal(a.model, "deepseek/deepseek-v4-flash", `内置 agent ${a.name} 默认 model 应为 deepseek/deepseek-v4-flash`);
-      assert.equal(a.thinking, undefined, `内置 agent ${a.name} 不带 thinking 字段 (不钉默认深度)`);
       assert.ok(a.systemPrompt.trim().length > 0, `${a.name} body (system prompt) 非空`);
     }
   } finally {
@@ -77,7 +80,7 @@ test("TC-001 builtin agents discoverable with full tools and default model", asy
   }
 });
 
-test("TC-002 explorer spawns without --tools and with default --model, no --thinking", async () => {
+test("TC-002 explorer spawns without --tools and with default --model/--thinking", async () => {
   const home = makeTempHome();
   try {
     const { result, bundle } = await runSingleWithBundle(home, { agent: "explorer", task: "探查项目结构" });
@@ -86,7 +89,8 @@ test("TC-002 explorer spawns without --tools and with default --model, no --thin
     assert.ok(!args.includes("--tools"), "explorer 无 tools 字段 → 省略 --tools (全工具)");
     assert.ok(args.includes("--model"), "内置 agent 带 frontmatter model → argv 含 --model");
     assert.equal(args[args.indexOf("--model") + 1], "deepseek/deepseek-v4-flash", "默认 model = frontmatter 值");
-    assert.ok(!args.includes("--thinking"), "内置 agent 无 thinking 字段 → argv 无 --thinking");
+    assert.ok(args.includes("--thinking"), "explorer 带 frontmatter thinking → argv 含 --thinking");
+    assert.equal(args[args.indexOf("--thinking") + 1], "high", "explorer 默认 thinking = high");
     assert.ok(!args.includes("-e"), "临时 HOME 无 resolve-skill 扩展 → argv 无 -e (静默跳过)");
     assert.ok(bundle.prompt && bundle.prompt.content.trim().length > 0, "explorer system prompt 应注入");
   } finally {
@@ -116,7 +120,7 @@ test("TC-002a resolve-skill extension is injected via -e when present in agent d
   }
 });
 
-test("TC-003 worker spawns with no --tools and default --model", async () => {
+test("TC-003 worker spawns with no --tools and default --model/--thinking", async () => {
   const home = makeTempHome();
   try {
     const { result, bundle } = await runSingleWithBundle(home, { agent: "worker", task: "写一个文件" });
@@ -125,6 +129,8 @@ test("TC-003 worker spawns with no --tools and default --model", async () => {
     assert.ok(!args.includes("--tools"), "worker 无 tools 字段 → argv 无 --tools (全工具语义)");
     assert.ok(args.includes("--model"), "worker frontmatter model → argv 含 --model");
     assert.equal(args[args.indexOf("--model") + 1], "deepseek/deepseek-v4-flash");
+    assert.ok(args.includes("--thinking"), "worker frontmatter thinking → argv 含 --thinking");
+    assert.equal(args[args.indexOf("--thinking") + 1], "high", "worker 默认 thinking = high");
   } finally {
     cleanup(home);
   }
