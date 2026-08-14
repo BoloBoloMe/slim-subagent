@@ -13,6 +13,8 @@ export interface AgentConfig {
   description: string;
   tools?: string[];
   model?: string;
+  // 思考深度 (pi --thinking 取值: off/minimal/low/medium/high/xhigh/max); 缺省 = 不传, 走模型/pi 默认.
+  thinking?: string;
   systemPrompt: string;
   source: "builtin" | "user";
 }
@@ -62,6 +64,8 @@ function loadAgentsFromDir(dir: string, source: "builtin" | "user"): AgentConfig
       description,
       tools: normalizeTools(frontmatter.tools),
       model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
+      // thinking 与 model 同形: 纯 string 非空透传 (合法性由 pi --thinking 自校验), 缺省 undefined.
+      thinking: typeof frontmatter.thinking === "string" && frontmatter.thinking.trim() !== "" ? frontmatter.thinking.trim() : undefined,
       systemPrompt: body,
       source,
     });

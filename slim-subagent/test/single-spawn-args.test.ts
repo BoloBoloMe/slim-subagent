@@ -62,8 +62,8 @@ async function runSingleWithBundle(
 test("TC-004 spawn argv follows pinned contract", async () => {
   const home = makeTempHome();
   try {
-    // agent 带 model + tools (M3-04 考察点 2: 有才加 --model/--tools).
-    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\nmodel: fake-model\ntools: bash, read\n");
+    // agent 带 model + thinking + tools (M3-04 考察点 2: 有才加 --model/--thinking/--tools).
+    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\nmodel: fake-model\nthinking: high\ntools: bash, read\n");
     const { result, bundle } = await runSingleWithBundle(home, {
       params: { agent: "Alpha", task: "做点事" },
     });
@@ -89,6 +89,10 @@ test("TC-004 spawn argv follows pinned contract", async () => {
     assert.ok(args.includes("--tools"), "argv 应含 --tools");
     assert.equal(args[args.indexOf("--tools") + 1], "bash,read");
 
+    // agent 带 thinking → --thinking <level> (frontmatter 默认深度).
+    assert.ok(args.includes("--thinking"), "argv 应含 --thinking");
+    assert.equal(args[args.indexOf("--thinking") + 1], "high");
+
     // 恒 --no-skills + --no-extensions (EXECUTION.md 调和 8).
     assert.ok(args.includes("--no-skills"), "argv 应含 --no-skills");
     assert.ok(args.includes("--no-extensions"), "argv 应含 --no-extensions");
@@ -103,6 +107,29 @@ test("TC-004 spawn argv follows pinned contract", async () => {
 
     // 末参 `Task: <task>` (≤8000 内联).
     assert.equal(args[args.length - 1], "Task: 做点事");
+  } finally {
+    cleanup(home);
+  }
+});
+
+test("TC-007 params model/thinking override frontmatter defaults", async () => {
+  const home = makeTempHome();
+  try {
+    // agent 带 model + thinking (frontmatter 默认), 调用参数传不同值 (覆盖优先).
+    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\nmodel: frontmatter-model\nthinking: high\n");
+    const { result, bundle } = await runSingleWithBundle(home, {
+      params: { agent: "Alpha", task: "做点事", model: "param-model", thinking: "low" },
+    });
+    assert.equal(result.isError, undefined);
+    const args = bundle.argv;
+    assert.equal(args[args.indexOf("--model") + 1], "param-model", "参数 model 应覆盖 frontmatter");
+    assert.equal(args[args.indexOf("--thinking") + 1], "low", "参数 thinking 应覆盖 frontmatter");
+
+    // run.json 快照应记生效值 (resume 重建依据).
+    const details = result.details as { sessionDir: string };
+    const runJson = JSON.parse(fs.readFileSync(path.join(details.sessionDir, "run.json"), "utf-8"));
+    assert.equal(runJson.model, "param-model");
+    assert.equal(runJson.thinking, "low");
   } finally {
     cleanup(home);
   }

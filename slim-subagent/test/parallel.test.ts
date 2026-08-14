@@ -297,8 +297,9 @@ test("TC-006 item model overrides batch default model", async () => {
       home,
       {
         model: "top-model",
+        thinking: "top-thinking",
         tasks: [
-          { agent: "Alpha", task: "task-0", model: "item-model-a" },
+          { agent: "Alpha", task: "task-0", model: "item-model-a", thinking: "item-thinking-a" },
           { agent: "Beta", task: "task-1" },
         ],
       },
@@ -320,8 +321,14 @@ test("TC-006 item model overrides batch default model", async () => {
       const idx = argv?.indexOf("--model") ?? -1;
       return idx !== -1 && argv ? argv[idx + 1] : undefined;
     };
+    const thinkingOf = (argv: string[] | undefined): string | undefined => {
+      const idx = argv?.indexOf("--thinking") ?? -1;
+      return idx !== -1 && argv ? argv[idx + 1] : undefined;
+    };
     assert.equal(modelOf(argvByTask.get("task-0")), "item-model-a", "item model 应覆盖顶层默认");
     assert.equal(modelOf(argvByTask.get("task-1")), "top-model", "无 item model 时应回退顶层默认");
+    assert.equal(thinkingOf(argvByTask.get("task-0")), "item-thinking-a", "item thinking 应覆盖顶层默认");
+    assert.equal(thinkingOf(argvByTask.get("task-1")), "top-thinking", "无 item thinking 时应回退顶层默认");
   } finally {
     cleanup(home);
   }
@@ -330,9 +337,9 @@ test("TC-006 item model overrides batch default model", async () => {
 test("TC-007 each child gets isolated run-<idx> session dir under batch root", async () => {
   const home = makeTempHome();
   try {
-    // agent 带 model + tools: 断言批次 run.json tasks 快照含各 child agent/model/tools (调和 12).
-    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\nmodel: fake-model\ntools: bash, read\n");
-    writeAgent(home, "beta.md", "name: Beta\ndescription: 处理研究任务\nmodel: fake-model-2\ntools: read\n");
+    // agent 带 model + thinking + tools: 断言批次 run.json tasks 快照含各 child agent/model/thinking/tools (调和 12).
+    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\nmodel: fake-model\nthinking: high\ntools: bash, read\n");
+    writeAgent(home, "beta.md", "name: Beta\ndescription: 处理研究任务\nmodel: fake-model-2\nthinking: low\ntools: read\n");
     const { result, details } = await runParallel(home, {
       tasks: [
         { agent: "Alpha", task: "t1" },
@@ -352,7 +359,7 @@ test("TC-007 each child gets isolated run-<idx> session dir under batch root", a
       mode: string;
       cwd: string;
       startedAt: string;
-      tasks: { agent: string; task: string; model?: string; tools?: string[] }[];
+      tasks: { agent: string; task: string; model?: string; thinking?: string; tools?: string[] }[];
     };
     assert.equal(runJson.runId, details.runId);
     assert.equal(runJson.mode, "parallel");
@@ -361,6 +368,7 @@ test("TC-007 each child gets isolated run-<idx> session dir under batch root", a
     assert.equal(runJson.tasks.length, 3);
     assert.deepEqual(runJson.tasks.map((t) => t.agent), ["Alpha", "Beta", "Alpha"]);
     assert.deepEqual(runJson.tasks.map((t) => t.model), ["fake-model", "fake-model-2", "fake-model"]);
+    assert.deepEqual(runJson.tasks.map((t) => t.thinking), ["high", "low", "high"]);
     assert.deepEqual(runJson.tasks.map((t) => t.tools), [["bash", "read"], ["read"], ["bash", "read"]]);
     // per-child: 共享批次 runId + 独立 run-<idx>/session.jsonl, 不写 per-child run.json (调和 12).
     for (const r of details.results) {

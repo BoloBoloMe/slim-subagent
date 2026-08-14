@@ -38,8 +38,8 @@ async function runTool(home: string, params: Record<string, unknown>): Promise<E
 test("TC-001 resume reopens persisted session with follow-up", async () => {
   const home = makeTempHome();
   try {
-    // agent 带 model + tools (断言恢复 spawn 按 run.json 快照重建 --model/--tools, 调和 14).
-    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\nmodel: fake-model\ntools: bash, read\n");
+    // agent 带 model + thinking + tools (断言恢复 spawn 按 run.json 快照重建 --model/--thinking/--tools, 调和 14).
+    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\nmodel: fake-model\nthinking: high\ntools: bash, read\n");
     const single = await runTool(home, { agent: "Alpha", task: "最初任务" });
     assert.equal(single.isError, undefined);
     const details = single.details as SingleDetails;
@@ -62,13 +62,14 @@ test("TC-001 resume reopens persisted session with follow-up", async () => {
     assert.equal(rDetails.runId, runId, "runId 沿用原 run (调和 13)");
     assert.equal(rDetails.sessionDir, sessionDir, "sessionDir 沿用原 run");
 
-    // 恢复 spawn 契约: --session <原路径> + 原 agent prompt 文件 + follow-up 原文 + 快照 --model/--tools.
+    // 恢复 spawn 契约: --session <原路径> + 原 agent prompt 文件 + follow-up 原文 + 快照 --model/--thinking/--tools.
     const bundle = JSON.parse(fs.readFileSync(bundlePath, "utf-8")) as { argv: string[]; prompt?: { content: string } };
     const args = bundle.argv;
     const sessionIdx = args.indexOf("--session");
     assert.ok(sessionIdx !== -1, "argv 应含 --session");
     assert.equal(args[sessionIdx + 1], path.join(sessionDir, "run-0", "session.jsonl"), "--session 应为原 sessionFile");
     assert.equal(args[args.indexOf("--model") + 1], "fake-model", "--model 按 run.json 快照重建");
+    assert.equal(args[args.indexOf("--thinking") + 1], "high", "--thinking 按 run.json 快照重建");
     assert.equal(args[args.indexOf("--tools") + 1], "bash,read", "--tools 按 run.json 快照重建");
     assert.ok(args.includes("--append-system-prompt"), "argv 应含 --append-system-prompt");
     assert.ok(bundle.prompt, "fake 应回显 prompt 快照");
@@ -204,7 +205,7 @@ test("TC-002b parallel batch run id rejected", async () => {
   }
 });
 
-test("TC-003 resume param validation: missing id / missing task / model rejected", async () => {
+test("TC-003 resume param validation: missing id / missing task / model/thinking rejected", async () => {
   const home = makeTempHome();
   try {
     writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\n");
@@ -220,10 +221,13 @@ test("TC-003 resume param validation: missing id / missing task / model rejected
     assert.equal(noTask.isError, true);
     assert.ok(resultText(noTask).includes("task"), `缺 task 应报错: ${resultText(noTask)}`);
 
-    // 带 model → 同用报错 (调和 6).
+    // 带 model → 同用报错 (调和 6); 带 thinking 同语义.
     const withModel = await runTool(home, { action: "resume", id: idA, task: "继续", model: "other-model" });
     assert.equal(withModel.isError, true);
     assert.ok(resultText(withModel).includes("model"), `model 覆盖应报错: ${resultText(withModel)}`);
+    const withThinking = await runTool(home, { action: "resume", id: idA, task: "继续", thinking: "low" });
+    assert.equal(withThinking.isError, true);
+    assert.ok(resultText(withThinking).includes("thinking"), `thinking 覆盖应报错: ${resultText(withThinking)}`);
   } finally {
     cleanup(home);
   }

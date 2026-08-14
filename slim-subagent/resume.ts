@@ -27,11 +27,12 @@ import type { LeaseOwner } from "./session-lease.ts";
 // M2-D005: GC 按龄 7 天 (对齐旧 artifacts cleanupDays=7).
 const GC_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
-// 寻址结果 (run.json 消费面; 调和 13/14: sessionFile/model/tools 为恢复 spawn 重建依据).
+// 寻址结果 (run.json 消费面; 调和 13/14: sessionFile/model/thinking/tools 为恢复 spawn 重建依据).
 export interface ResumedRunInfo {
   runId: string;
   agent: string;
   model?: string;
+  thinking?: string;
   cwd: string;
   sessionFile: string; // 绝对路径
   tools?: string[];
@@ -61,6 +62,7 @@ export function findRunForResume(id: string): ResumedRunInfo {
   const runJson = JSON.parse(fs.readFileSync(path.join(root, runId, "run.json"), "utf-8")) as {
     agent?: unknown;
     model?: unknown;
+    thinking?: unknown;
     cwd?: unknown;
     sessionFile?: unknown;
     tools?: unknown;
@@ -85,6 +87,7 @@ export function findRunForResume(id: string): ResumedRunInfo {
     runId,
     agent: runJson.agent,
     ...(typeof runJson.model === "string" && runJson.model !== "" ? { model: runJson.model } : {}),
+    ...(typeof runJson.thinking === "string" && runJson.thinking !== "" ? { thinking: runJson.thinking } : {}),
     cwd: typeof runJson.cwd === "string" && runJson.cwd !== "" ? runJson.cwd : process.cwd(),
     sessionFile,
     ...(Array.isArray(runJson.tools) ? { tools: runJson.tools.filter((t): t is string => typeof t === "string") } : {}),
@@ -97,6 +100,7 @@ export function findRunForResume(id: string): ResumedRunInfo {
 // (接受中断 turn 重复, M3 §四 #5).
 function buildResumeArgs(opts: {
   model?: string;
+  thinking?: string;
   tools?: string[];
   sessionFile: string;
   promptFile: string | null;
@@ -105,6 +109,7 @@ function buildResumeArgs(opts: {
 }): string[] {
   const args: string[] = ["--mode", "json", "-p", "--session", opts.sessionFile];
   if (opts.model) args.push("--model", opts.model);
+  if (opts.thinking) args.push("--thinking", opts.thinking);
   if (opts.tools && opts.tools.length > 0) args.push("--tools", opts.tools.join(","));
   args.push("--no-skills", "--no-extensions");
   const resolveSkillExt = resolveSkillExtensionPath();
@@ -124,7 +129,7 @@ function buildResumeArgs(opts: {
 // → 复用 single 结果回收全路径 (assembleSingleResult) + resumed:true + 原 runId/sessionDir (调和 13).
 // 错误一律转 isError 结果 (不 throw), 对齐 index.ts 校验层形态.
 export async function runResume(
-  params: { id?: unknown; task?: unknown; model?: unknown; timeoutMs?: unknown; usageBudget?: unknown; cwd?: unknown },
+  params: { id?: unknown; task?: unknown; model?: unknown; thinking?: unknown; timeoutMs?: unknown; usageBudget?: unknown; cwd?: unknown },
   ctx: { cwd?: unknown; getContextUsage?: unknown },
   signal?: AbortSignal,
   onUpdate?: StreamUpdateCallback,
@@ -141,6 +146,9 @@ export async function runResume(
   if (!task || task.trim() === "") return err('action:"resume" 须提供 task (follow-up 文本)');
   if (typeof params.model === "string" && params.model.trim() !== "") {
     return err('action:"resume" 不接受 model 覆盖 (复用原 run 的 model)');
+  }
+  if (typeof params.thinking === "string" && params.thinking.trim() !== "") {
+    return err('action:"resume" 不接受 thinking 覆盖 (复用原 run 的 thinking)');
   }
   // timeoutMs/usageBudget 可覆盖 (对齐 single 校验层语义, 非法值同文案报错).
   if (params.timeoutMs !== undefined && params.timeoutMs !== null) {
@@ -205,7 +213,7 @@ export async function runResume(
       promptFile = path.join(tmpDir, `prompt-${safeName}.md`);
       fs.writeFileSync(promptFile, agent.systemPrompt, { encoding: "utf-8", mode: 0o600 });
     }
-    const args = buildResumeArgs({ model: run.model, tools: run.tools, sessionFile: run.sessionFile, promptFile, tmpDir, task });
+    const args = buildResumeArgs({ model: run.model, thinking: run.thinking, tools: run.tools, sessionFile: run.sessionFile, promptFile, tmpDir, task });
     const result = await runProcess(agent, task, args, cwd, timeoutMs, signal, eff.budget, onUpdate);
     return assembleSingleResult(result, {
       runId: run.runId,

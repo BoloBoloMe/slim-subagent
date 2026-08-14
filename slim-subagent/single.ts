@@ -267,15 +267,16 @@ function sessionPaths(runId: string): { sessionDir: string; sessionFile: string 
   return { sessionDir, sessionFile: path.join(sessionDir, "run-0", "session.jsonl") };
 }
 
-// ISSUE-02 #2: run.json {runId, agent, model?, cwd, startedAt, sessionFile} (原子写: 同目录 tmp + rename).
+// ISSUE-02 #2: run.json {runId, agent, model?, thinking?, cwd, startedAt, sessionFile} (原子写: 同目录 tmp + rename).
 function writeRunJson(
-  data: { runId: string; agent: string; model?: string; cwd: string; startedAt: string; tools?: string[] },
+  data: { runId: string; agent: string; model?: string; thinking?: string; cwd: string; startedAt: string; tools?: string[] },
   sessionDir: string,
 ): void {
   const runJson = {
     runId: data.runId,
     agent: data.agent,
     ...(data.model ? { model: data.model } : {}),
+    ...(data.thinking ? { thinking: data.thinking } : {}),
     cwd: data.cwd,
     startedAt: data.startedAt,
     // EXECUTION.md 调和 14: tools 快照 (agent 定义解析后的工具面, resume spawn 按快照重建 --tools);
@@ -393,12 +394,14 @@ function buildPiArgs(opts: {
   agent: AgentConfig;
   task: string;
   model?: string;
+  thinking?: string;
   sessionFile: string;
   promptFile: string | null;
   tmpDir: string;
 }): string[] {
   const args: string[] = ["--mode", "json", "-p", "--session", opts.sessionFile];
   if (opts.model) args.push("--model", opts.model);
+  if (opts.thinking) args.push("--thinking", opts.thinking);
   if (opts.agent.tools && opts.agent.tools.length > 0) args.push("--tools", opts.agent.tools.join(","));
   args.push("--no-skills", "--no-extensions");
   const resolveSkillExt = resolveSkillExtensionPath();
@@ -1291,6 +1294,7 @@ export async function runSingleAgent(opts: {
   agent: AgentConfig;
   task: string;
   model?: string; // 覆盖 agent frontmatter (M2-D008 参数 4)
+  thinking?: string; // 思考深度覆盖 agent frontmatter (pi --thinking: off/minimal/low/medium/high/xhigh/max)
   cwd: string; // 子代理工作目录, 默认继承父会话 (M2-D008 参数 7)
   timeoutMs?: number; // ISSUE-03: 超时毫秒, 正整数, 缺省 900000 (15min)
   usageBudget?: number; // ISSUE-04: token 上限 (纯 number 正数, 触顶中止; 非法值校验报错)
@@ -1336,8 +1340,9 @@ export async function runSingleAgent(opts: {
     : sessionPaths(runId);
   fs.mkdirSync(path.dirname(sessionFile), { recursive: true }); // run-<idx>/ 目录; session.jsonl 由 pi (fake) 写盘
   const effectiveModel = opts.model ?? opts.agent.model;
+  const effectiveThinking = opts.thinking ?? opts.agent.thinking;
   if (!opts.skipRunJson) {
-    writeRunJson({ runId, agent: opts.agent.name, model: effectiveModel, cwd: opts.cwd, startedAt: new Date().toISOString(), tools: opts.agent.tools }, sessionDir);
+    writeRunJson({ runId, agent: opts.agent.name, model: effectiveModel, thinking: effectiveThinking, cwd: opts.cwd, startedAt: new Date().toISOString(), tools: opts.agent.tools }, sessionDir);
   }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
@@ -1348,7 +1353,7 @@ export async function runSingleAgent(opts: {
       promptFile = path.join(tmpDir, `prompt-${safeName}.md`);
       fs.writeFileSync(promptFile, opts.agent.systemPrompt, { encoding: "utf-8", mode: 0o600 }); // 0600 (M3-04 考察点 2)
     }
-    const args = buildPiArgs({ agent: opts.agent, task: opts.task, model: effectiveModel, sessionFile, promptFile, tmpDir });
+    const args = buildPiArgs({ agent: opts.agent, task: opts.task, model: effectiveModel, thinking: effectiveThinking, sessionFile, promptFile, tmpDir });
     const result = await runProcess(opts.agent, opts.task, args, opts.cwd, opts.timeoutMs, opts.signal, usageBudget, opts.onUpdate);
 
     return assembleSingleResult(result, {

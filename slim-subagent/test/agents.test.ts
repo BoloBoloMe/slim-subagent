@@ -1,7 +1,7 @@
 // ISSUE-07 TS-001 切片测试: 内置 3 agents (M1-D008) — 名册可见 + spawn argv 工具面契约 + 渲染接线冒烟.
 // 接缝 (EXECUTION.md 测试策略 1/2): fake ExtensionAPI 捕获 registerTool 直调 execute;
 // fake pi 经 PI_SUBAGENT_PI_BINARY 注入 + FAKE_PI_ECHO_BUNDLE 回显 argv; 临时 HOME 隔离 user 源.
-// 覆盖: M1-D008 (explorer/worker/reviewer), EXECUTION.md 调和 10 (内置 agent 无 model 字段 → 省略 --model),
+// 覆盖: M1-D008 (explorer/worker/reviewer), 内置 agent 默认 model (frontmatter 统一 deepseek/deepseek-v4-flash),
 // M1-D001(9) 渲染接线冒烟 (renderCall/renderResult 已注册且构造 pi-tui 组件不崩; 渲染效果属 TS-002 人工验证).
 // 注: 渲染段 pi-tui 组件在测试环境仅模块加载/构造, 不调用 render (停止条件: 加载失败即停).
 
@@ -46,7 +46,7 @@ async function runSingleWithBundle(
   }
 }
 
-test("TC-001 builtin agents discoverable with full tools and no model", async () => {
+test("TC-001 builtin agents discoverable with full tools and default model", async () => {
   const home = makeTempHome();
   try {
     // 名册 (空 user 目录 → 纯内置): 3 个内置 agent 均可见且描述非空 (M1-D008).
@@ -60,14 +60,16 @@ test("TC-001 builtin agents discoverable with full tools and no model", async ()
       assert.ok(line, `名册应含内置 agent ${name}`);
       assert.ok(line!.slice(`- ${name}: `.length).trim() !== "", `${name} 描述非空`);
     }
-    // 数据面 (M1-D008 + 调和 10): 均无 tools 字段 (全工具, spawn 不加 --tools); 均不带 model 字段; body (system prompt) 非空.
+    // 数据面 (M1-D008): 均无 tools 字段 (全工具, spawn 不加 --tools); 均带默认 model (frontmatter 统一 deepseek/deepseek-v4-flash);
+    // 无 thinking 字段 (不钉默认深度, 走模型/pi 默认); body (system prompt) 非空.
     const builtin = discoverAgents().filter((a) => ["explorer", "reviewer", "worker"].includes(a.name));
     assert.equal(builtin.length, 3);
     for (const name of ["explorer", "reviewer", "worker"]) {
       assert.equal(builtin.find((a) => a.name === name)?.tools, undefined, `${name} 无 tools 字段 = 全工具`);
     }
     for (const a of builtin) {
-      assert.equal(a.model, undefined, `内置 agent ${a.name} 不带 model 字段 (调和 10)`);
+      assert.equal(a.model, "deepseek/deepseek-v4-flash", `内置 agent ${a.name} 默认 model 应为 deepseek/deepseek-v4-flash`);
+      assert.equal(a.thinking, undefined, `内置 agent ${a.name} 不带 thinking 字段 (不钉默认深度)`);
       assert.ok(a.systemPrompt.trim().length > 0, `${a.name} body (system prompt) 非空`);
     }
   } finally {
@@ -75,14 +77,16 @@ test("TC-001 builtin agents discoverable with full tools and no model", async ()
   }
 });
 
-test("TC-002 explorer spawns without --tools (全工具) and no --model", async () => {
+test("TC-002 explorer spawns without --tools and with default --model, no --thinking", async () => {
   const home = makeTempHome();
   try {
     const { result, bundle } = await runSingleWithBundle(home, { agent: "explorer", task: "探查项目结构" });
     assert.equal(result.isError, undefined);
     const args = bundle.argv;
     assert.ok(!args.includes("--tools"), "explorer 无 tools 字段 → 省略 --tools (全工具)");
-    assert.ok(!args.includes("--model"), "内置 agent 无 model → 省略 --model (调和 10)");
+    assert.ok(args.includes("--model"), "内置 agent 带 frontmatter model → argv 含 --model");
+    assert.equal(args[args.indexOf("--model") + 1], "deepseek/deepseek-v4-flash", "默认 model = frontmatter 值");
+    assert.ok(!args.includes("--thinking"), "内置 agent 无 thinking 字段 → argv 无 --thinking");
     assert.ok(!args.includes("-e"), "临时 HOME 无 resolve-skill 扩展 → argv 无 -e (静默跳过)");
     assert.ok(bundle.prompt && bundle.prompt.content.trim().length > 0, "explorer system prompt 应注入");
   } finally {
@@ -112,14 +116,15 @@ test("TC-002a resolve-skill extension is injected via -e when present in agent d
   }
 });
 
-test("TC-003 worker spawns with no --tools and no --model", async () => {
+test("TC-003 worker spawns with no --tools and default --model", async () => {
   const home = makeTempHome();
   try {
     const { result, bundle } = await runSingleWithBundle(home, { agent: "worker", task: "写一个文件" });
     assert.equal(result.isError, undefined);
     const args = bundle.argv;
     assert.ok(!args.includes("--tools"), "worker 无 tools 字段 → argv 无 --tools (全工具语义)");
-    assert.ok(!args.includes("--model"), "内置 agent 无 model → argv 无 --model");
+    assert.ok(args.includes("--model"), "worker frontmatter model → argv 含 --model");
+    assert.equal(args[args.indexOf("--model") + 1], "deepseek/deepseek-v4-flash");
   } finally {
     cleanup(home);
   }

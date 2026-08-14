@@ -2,7 +2,7 @@
 // + ISSUE-05 (parallel 并行) 切片.
 // 本切片: onUpdate 流式接线 (M3-02 考察点 6) + run.json tools 快照 (EXECUTION.md 调和 14);
 // ISSUE-05: tasks[] 并行分支 (M2-D004/M2-D008, 官方示例 mapWithConcurrencyLimit 整搬 + 聚合).
-// 覆盖: registerTool 注册名 "subagent" (M2-D001) + schema 恰 9 参数 (M2-D008) + 描述 v3 原文 (M2-D010);
+// 覆盖: registerTool 注册名 "subagent" (M2-D001) + schema 恰 10 参数 (M2-D008) + 描述 v3 原文 (M2-D010);
 // action:"list" 发现 (M1-D009, M2-D007); execute 校验 (M2-D008 条件必填, M1-D009 error-driven 兜底);
 // single 分支接入真实 spawn + timeout 管线 (single.ts) + usageBudget 触顶终止透传;
 // parallel 分支: 并发 4/最大 8 + 批次 run.json (调和 12) + per-child run-<idx> session + 顶层默认/item 覆盖;
@@ -40,16 +40,18 @@ const TaskItem = Type.Object({
   agent: Type.String({ description: "agent 名" }),
   task: Type.String({ description: "并行任务" }),
   model: Type.Optional(Type.String({ description: "覆盖 agent frontmatter 的 model" })),
+  thinking: Type.Optional(Type.String({ description: "覆盖 agent frontmatter 的 thinking 深度" })),
   timeoutMs: Type.Optional(Type.Number({ description: "超时毫秒" })),
   usageBudget: Type.Optional(Type.Number({ description: "token 上限" })),
 });
 
-// M2-D008 schema 恰 9 参数; 条件必填 (agent 在 action:"list" 时可省, task/tasks 互斥) 由 execute 校验承担 (TS-003), typebox 不表达.
+// M2-D008 schema 恰 10 参数; 条件必填 (agent 在 action:"list" 时可省, task/tasks 互斥) 由 execute 校验承担 (TS-003), typebox 不表达.
 const SubagentParams = Type.Object({
   agent: Type.Optional(Type.String({ description: "agent 名" })),
   task: Type.Optional(Type.String({ description: "单次任务; 与 tasks 互斥" })),
   tasks: Type.Optional(Type.Array(TaskItem, { description: "parallel 任务数组, ≤8" })),
   model: Type.Optional(Type.String({ description: "覆盖 agent frontmatter 的 model" })),
+  thinking: Type.Optional(Type.String({ description: "覆盖 agent frontmatter 的 thinking 深度 (off/minimal/low/medium/high/xhigh/max)" })),
   timeoutMs: Type.Optional(Type.Number({ description: "超时毫秒, 默认 900000" })),
   usageBudget: Type.Optional(Type.Number({ description: "累计 input+output+cacheWrite token 上限, 触顶中止" })),
   cwd: Type.Optional(Type.String({ description: "子代理工作目录, 默认继承父会话" })),
@@ -151,7 +153,7 @@ function writeParallelRunJson(
     runId: string;
     cwd: string;
     startedAt: string;
-    tasks: { agent: string; task: string; model?: string; tools?: string[] }[];
+    tasks: { agent: string; task: string; model?: string; thinking?: string; tools?: string[] }[];
   },
   sessionDir: string,
 ): void {
@@ -194,7 +196,7 @@ async function mapWithConcurrencyLimit<TIn, TOut>(
 // 每 child 复用 single 管线 (runSingleAgent) 为执行单元; 全部跑完再汇总, 每任务独立 isError, 不 fail-fast;
 // 聚合顶层不置 isError (官方同款), 每任务失败态在 details.results 独立暴露.
 async function runParallelTasks(
-  params: { tasks?: unknown; model?: unknown; timeoutMs?: unknown; usageBudget?: unknown; cwd?: unknown },
+  params: { tasks?: unknown; model?: unknown; thinking?: unknown; timeoutMs?: unknown; usageBudget?: unknown; cwd?: unknown },
   agents: AgentConfig[],
   cwd: string,
   signal: AbortSignal | undefined,
@@ -202,7 +204,7 @@ async function runParallelTasks(
   ctx: unknown, // 强制预算: 子代理模型窗口查询 (modelRegistry)
   onUpdate?: StreamUpdateCallback, // ISSUE-07 deferred (b): parallel onUpdate 聚合流
 ): Promise<AgentToolResult<ParallelDetails>> {
-  const tasks = params.tasks as { agent?: unknown; task?: unknown; model?: unknown; timeoutMs?: unknown; usageBudget?: unknown }[];
+  const tasks = params.tasks as { agent?: unknown; task?: unknown; model?: unknown; thinking?: unknown; timeoutMs?: unknown; usageBudget?: unknown }[];
   // ISSUE-07 deferred (d): item 级 task 校验 (与 single 模式对齐 — 空串/非 string 显式报错, 不静默变空串).
   for (let i = 0; i < tasks.length; i++) {
     const t = tasks[i];
@@ -226,20 +228,22 @@ async function runParallelTasks(
   const batchRunId = makeRunId();
   const batchRoot = sessionRootDir(batchRunId);
   fs.mkdirSync(batchRoot, { recursive: true });
-  // M2-D008: 顶层 model/timeoutMs/usageBudget 作批默认, item 级字段覆盖 (undefined 回退顶层默认).
+  // M2-D008: 顶层 model/thinking/timeoutMs/usageBudget 作批默认, item 级字段覆盖 (undefined 回退顶层默认).
   const defaultModel = typeof params.model === "string" && params.model !== "" ? params.model : undefined;
+  const defaultThinking = typeof params.thinking === "string" && params.thinking !== "" ? params.thinking : undefined;
   const defaultTimeout = typeof params.timeoutMs === "number" ? params.timeoutMs : undefined;
   const defaultBudget = params.usageBudget as number | undefined;
   const resolved = tasks.map((t) => {
     const agent = agents.find((a) => a.name === t.agent);
     const model = typeof t.model === "string" && t.model !== "" ? t.model : defaultModel;
+    const thinking = typeof t.thinking === "string" && t.thinking !== "" ? t.thinking : defaultThinking;
     const timeoutMs = typeof t.timeoutMs === "number" ? t.timeoutMs : defaultTimeout;
     const explicitBudget = (t.usageBudget as number | undefined) ?? defaultBudget;
     // 强制预算: 每 child 未显式传 budget → 自动 0.7 × 该 child 模型窗口 (与 single 同一解析函数).
     const eff = agent ? resolveEffectiveUsageBudget(explicitBudget, model ?? agent.model, ctx) : undefined;
     const usageBudget = eff?.budget;
     const budgetAuto = eff?.auto;
-    return { item: t, agent, model, timeoutMs, usageBudget, budgetAuto };
+    return { item: t, agent, model, thinking, timeoutMs, usageBudget, budgetAuto };
   });
 
   // 批次 run.json (调和 12): tasks 快照含各 child agent/model/tools + task (model 取合并后生效值).
@@ -249,12 +253,14 @@ async function runParallelTasks(
       cwd,
       startedAt: new Date().toISOString(),
       tasks: resolved.map((r) => {
-        // model 取完全生效值 (item 覆盖 ?? 顶层默认 ?? agent frontmatter, 对齐 runSingleAgent effectiveModel).
+        // model/thinking 取完全生效值 (item 覆盖 ?? 顶层默认 ?? agent frontmatter, 对齐 runSingleAgent effectiveModel/effectiveThinking).
         const effectiveModel = r.model ?? r.agent?.model;
+        const effectiveThinking = r.thinking ?? r.agent?.thinking;
         return {
           agent: String(r.item.agent),
           task: typeof r.item.task === "string" ? r.item.task : "",
           ...(effectiveModel ? { model: effectiveModel } : {}),
+          ...(effectiveThinking ? { thinking: effectiveThinking } : {}),
           ...(r.agent?.tools && r.agent.tools.length > 0 ? { tools: r.agent.tools } : {}),
         };
       }),
@@ -293,6 +299,7 @@ async function runParallelTasks(
       agent,
       task,
       model: r.model,
+      thinking: r.thinking,
       cwd,
       timeoutMs: r.timeoutMs,
       usageBudget: r.usageBudget,
@@ -455,7 +462,7 @@ export default function (pi: ExtensionAPI) {
       _ctx: ExtensionContext,
     ): Promise<AgentToolResult> {
       const params = _params as
-        | { action?: unknown; agent?: unknown; task?: unknown; tasks?: unknown; usageBudget?: unknown; model?: unknown; timeoutMs?: unknown; cwd?: unknown }
+        | { action?: unknown; agent?: unknown; task?: unknown; tasks?: unknown; usageBudget?: unknown; model?: unknown; thinking?: unknown; timeoutMs?: unknown; cwd?: unknown }
         | null
         | undefined;
 
@@ -492,6 +499,7 @@ export default function (pi: ExtensionAPI) {
       const agent = agents.find((a) => a.name === (params?.agent as string))!;
       const task = typeof params?.task === "string" ? params.task : "";
       const model = typeof params?.model === "string" && params.model !== "" ? params.model : undefined;
+      const thinking = typeof params?.thinking === "string" && params.thinking !== "" ? params.thinking : undefined;
       // ISSUE-03: timeoutMs 参数提取 — 原始数值透传 (0/负数/NaN/非整数由 runSingleAgent 校验层统一兜底报错,
       // 修复前被此处 >0 过滤成 undefined 静默按默认 15min 跑, 校验层不可达) + ctx.getContextUsage 注入.
       const timeoutMs = typeof params?.timeoutMs === "number" ? params.timeoutMs : undefined;
@@ -503,7 +511,7 @@ export default function (pi: ExtensionAPI) {
       const eff = resolveEffectiveUsageBudget(explicitBudget, model ?? agent.model, _ctx);
       // TS-004: 取消监听 (AbortSignal) 透传 — abort → SIGTERM → 3s SIGKILL (M3-01 考察点 4);
       // 本切片: onUpdate 透传 (M3-02 考察点 6 触发点/payload 见 single.ts).
-      return runSingleAgent({ agent, task, model, cwd, timeoutMs, usageBudget: eff.budget, budgetAuto: eff.auto, getContextUsage, signal: _signal, onUpdate });
+      return runSingleAgent({ agent, task, model, thinking, cwd, timeoutMs, usageBudget: eff.budget, budgetAuto: eff.auto, getContextUsage, signal: _signal, onUpdate });
     },
     // ISSUE-07: TUI 最小渲染 (M1-D001(9)) — renderCall 摘要 + renderResult 折叠/展开 + usage 统计.
     renderCall(args, theme) {

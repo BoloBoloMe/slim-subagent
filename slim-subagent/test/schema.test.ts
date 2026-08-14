@@ -6,8 +6,8 @@ import extensionFactory from "../index.ts";
 // 接缝 (EXECUTION.md 测试策略接缝 1): fake ExtensionAPI 捕获 registerTool 注册的 schema 与描述
 // 预期值来自 M2 决策账本 (独立真相源), 非实现拷贝.
 
-// M2-D008 钉死的 9 个参数名
-const PINNED_PARAMS = ["agent", "task", "tasks", "model", "timeoutMs", "usageBudget", "cwd", "action", "id"];
+// M2-D008 钉死的 10 个参数名 (thinking 为后增项: frontmatter 默认深度 + 传参覆盖)
+const PINNED_PARAMS = ["agent", "task", "tasks", "model", "thinking", "timeoutMs", "usageBudget", "cwd", "action", "id"];
 
 // 工具描述钉版原文 (v6: 删与 snippet 重复的委派偏置句, 只留阻塞语义 + 接口速记 + list/resume 操作语义)
 const PINNED_DESCRIPTION =
@@ -35,10 +35,10 @@ function captureRegistration(): {
   return captured;
 }
 
-test("TC-001 schema exposes exactly 9 pinned params", () => {
+test("TC-001 schema exposes exactly 10 pinned params", () => {
   const { parameters } = captureRegistration();
   const names = Object.keys(parameters.properties);
-  assert.equal(names.length, 9);
+  assert.equal(names.length, 10);
   assert.deepEqual(names.sort(), [...PINNED_PARAMS].sort());
 });
 
