@@ -7,7 +7,7 @@
 ### D001 模块划分: 五新文件 + 现有文件只插桩
 - 状态: 当前有效
 - 约束性: 必须遵守
-- 内容: slim-subagent 内新增 `log.ts` (JSONL writer/level/脱敏/taskHash/7 日 GC, M09-M10), `projection.ts` (projectSlimDetailsToRunNodes/状态映射/modelSource, M11), `card.ts` (Run Card 组件/spinner/截断, M12), `viewer.ts` (overlay/Timeline/transcript 渲染/tolerant reader, M13), `diagnose.ts` (target 解析/证据收集/findings, M14). 现有 index.ts/single.ts/resume.ts 保留执行逻辑, 只加日志插桩与 details 补丁 (M10); registerCommand/schema 接线留 index.ts. 理由: 文件与里程碑一一对应, 冲突面最小, 单一职责; 用户确认.
+- 内容: slim-subagent 内新增 `log.ts` (JSONL writer/level/脱敏/taskHash/7 日 GC, M09-M10), `projection.ts` (projectSlimDetailsToRunNodes/状态映射/modelSource, M11), `card.ts` (Run Card 组件/spinner/截断, M12), `viewer.ts` (overlay/Timeline/transcript 渲染/tolerant reader, M13), `diagnose.ts` (target 解析/证据收集/findings, M14). 现有 index.ts/single.ts/resume.ts 保留执行逻辑, 只加日志插桩与 details 补丁 (M10) — **例外: M17 的 runParallelTasks per-child onUpdate 透传属功能改造** (M07 D013 拍板), 不受"只插桩"限制; registerCommand/schema 接线留 index.ts. 理由: 文件与里程碑一一对应, 冲突面最小, 单一职责; 用户确认.
 - 预计影响: slim-subagent/ 新增 5 文件; index.ts/single.ts/resume.ts 插桩
 
 ### D002 M12/M13/M14 并行纪律
@@ -19,7 +19,7 @@
 ### D003 单测覆盖梯度
 - 状态: 当前有效
 - 约束性: 必须遵守
-- 内容: 必须先行的纯函数单测 (node --test, red-green): ① 投影映射 (details→RunNode 全状态机); ② 状态映射 (pending 推导/attention 聚合); ③ 日志脱敏 + taskHash; ④ diagnose target 解析 (前缀/尾段/歧义); ⑤ 卡截断省略顺序 (§4.0 逐档). TUI 行为 (spinner/overlay/键盘流) 走 pty 冒烟, 每里程碑 1 轮全绿即过, 不求断言覆盖率. 理由: 逻辑密集纯函数 TDD 收益最大, TUI 单测性价比低; 用户确认.
+- 内容: 必须先行的纯函数单测 (node --test, red-green): ① 投影映射 (details→RunNode 全状态机); ② 状态映射 (pending 推导/attention 聚合); ③ 日志脱敏 + taskHash; ④ diagnose target 解析 (前缀/尾段/歧义); ⑤ 卡截断省略顺序 (§4.0 逐档); ⑥ tolerant JSONL reader (无法识别行进 raw 不丢弃, M13). 名单非排他, 新纯函数按同哲学补. TUI 行为 (spinner/overlay/键盘流) 走 pty 冒烟, 每里程碑 1 轮全绿即过, 不求断言覆盖率. 理由: 逻辑密集纯函数 TDD 收益最大, TUI 单测性价比低; 用户确认.
 - 预计影响: slim-subagent/test/ 新增对应测试文件
 
 ### D004 提交策略
