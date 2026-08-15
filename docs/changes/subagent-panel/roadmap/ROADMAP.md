@@ -47,10 +47,11 @@
 - [MILESTONE-05](MILESTONE-05.md) — Widget/Footer 原型评审收口: widget **belowEditor + 5 行**; footer **与内建共存** (setFooter factory 拿 footerData 做两行自定义, 不接受替换); MAX_WIDGET_LINES=10 / factory 不保证每步刷新等 API 事实入档. 报告: [milestone-05-report.md](../milestone-05/milestone-05-report.md).
 - [MILESTONE-06](MILESTONE-06.md) — Session Viewer 定稿 (v2): **tab = 批次子代理 + 首 tab Timeline 批次时间线** (上早下晚, Enter 换批), 子代理会话视觉对齐 pi transcript; Tab/Shift+Tab/←/→/数字键, 自绘滚动过关, 始终全屏, Esc+toggle 关闭, 不做 overlay 内回放. 报告: [milestone-06-report.md](../milestone-06/milestone-06-report.md).
 - [MILESTONE-07](MILESTONE-07.md) — 定稿盘问闭环, **PRD v2.0 确认版落盘**: 形态 A+D+E (B/C 出局); Run Card 变体 C + spinner 动效 + CH 段; Viewer = Timeline + 子代理会话 tab; 命令面 /agent-sessions (alt+v) + /agent-diagnose; 无手动 copy/resume 入口; 数据源内存+磁盘回补 20 批; 测试策略 (node --test + pty 冒烟). 账本: [DECISIONS.md](../milestone-07/DECISIONS.md) (D001-D013, F001-F005); 领域语言 [docs/language/UBIQUITOUS_LANGUAGE.md](../../language/UBIQUITOUS_LANGUAGE.md) 首建.
+- [MILESTONE-08](MILESTONE-08.md) — 施工闸门定稿: 五新文件模块划分 (log/projection/card/viewer/diagnose) + 现有文件只插桩; M12/M13/M14 并行纪律 (index.ts 归 M12, 接线主会话统一); 5 类纯函数单测先行; feat/doc 提交分工; 委派禁验证剧场. 账本: [milestone-08/DECISIONS.md](../milestone-08/DECISIONS.md) (D001-D005).
 
 ## 前沿
 
-- [MILESTONE-08](MILESTONE-08.md) — `deliberate` — 实现方案定稿 (施工闸门, 已解锁)
+- [MILESTONE-09](MILESTONE-09.md) — `task` — 日志骨架 (实现走廊入口, 已解锁)
 
 ## 未决迷雾
 

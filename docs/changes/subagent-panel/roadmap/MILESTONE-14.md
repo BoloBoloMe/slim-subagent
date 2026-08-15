@@ -6,7 +6,7 @@
 
 E — Diagnose 命令实现 (PRD §12 第 6 步). AFK 编码任务, 调用 `tdd-as-orchestra` skill:
 
-- 扩展 schema/action: `subagent { action:"diagnose", id?, since?, levelMin?, limit?, writeReport? }`; 若 pi 支持, `/agents diagnose` 映射同一能力;
+- 扩展 schema/action: `subagent { action:"diagnose", id?, since?, levelMin?, limit?, writeReport? }`; `/agent-diagnose` 映射同一能力 (M07 D009);
 - target 解析: runId 前缀/随机尾段/`batchRunId#index`/today, 歧义报错列候选 (寻址可复用 resume.ts:44 findRunForResume);
 - 证据收集: log 按 since/levelMin 过滤 + session 关联, 只读, 默认脱敏;
 - 启发式 findings (PRD §7.2 类别清单) → Finding schema (§7.3); content 简洁中文结论, details 含 evidence refs;
