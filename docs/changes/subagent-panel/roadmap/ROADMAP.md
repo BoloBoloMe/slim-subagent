@@ -24,7 +24,7 @@
 
 **方向侦查结论**: 选定**混合路线** (R1 排雷 + 契约修订开路 → 原型驱动敲定交互 → 定稿 → 实现走廊 → 验收交付). 未选方向排除理由: 纯原型驱动会带着有毒契约进原型; 纯契约先行把 TUI 交互决策推给纸面 (体验死区); 纯风险倒序 8/12 风险已闭环, 串行排雷是浪费.
 
-**形态 A 存废候选** (2026-08-15, 用户新想法): 砍 Inline Run Card, 唯一实时观测面 = belowEditor widget (变体 C 内容); 内建 footer 不动. 代价: transcript 不留痕 (回看靠 Session Viewer), 工具调用默认渲染待定. M07 重点盘问项; 若成立 M12 重定义 + M15 并入. 详见 MILESTONE-07.
+**形态裁决** (2026-08-15, 用户实测无卡形态后拍板): **保留 Inline Run Card (变体 C), 砍 Widget 面板** (§4.3 Persistent Panel 出局, M15 范围只剩 footer). footer 摘要 (§4.2) 存废留 M07, 约束 = 与内建 footer 共存 (两行自定义, 不顶掉). spinner 动效需求落在 inline 卡上 — renderResult 组件内置 timer + requestRender 的可行性列为 M12 首个验证点. 早前 "形态 A 存废候选" 与 widget below/above 位置记录均作废 (源自 widget/footer 术语误会).
 
 **动效需求** (2026-08-15, 用户): active 图标须为动画 spinner (⠋⠙⠹… 轮转), 不接受静态 ⠿; 终态静态. 原型未实现 (图标是文本字形, 仅随数据更新重绘). 实现路径: 组件内置 timer + tui.requestRender 主动重绘 (同 pi 内建 Working... spinner 机制), 与数据更新解耦; 适用 Run Card + widget 面板所有 active 行. M12 实现时验证.
 

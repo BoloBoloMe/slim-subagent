@@ -1,5 +1,7 @@
 # M05 报告: Widget 面板 + Footer 摘要原型 (HITL 评审)
 
+> **更正 (2026-08-15 末)**: 本报告初版结论 (belowEditor/5 行) 源自用户把 widget 误认为 footer 的术语混乱. 用户实测"无卡 + widget 独挑"完整形态后拍板: **保留 Inline Run Card, 砍 Widget 面板**. widget 位置/高度结论作废; footer 存废移交 M07 (共存约束仍有效). 以 ROADMAP 笔记 "形态裁决" 为准.
+
 - 日期: 2026-08-15
 - 里程碑: MILESTONE-05 (prototype, HITL)
 - 载体: `~/.pi/agent/extensions/subagent-panel-proto/` (M04 基础上加 widget/footer); 源码归档 `milestone-05/prototype/`
