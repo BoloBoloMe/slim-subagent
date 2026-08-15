@@ -45,11 +45,12 @@
 - [MILESTONE-03](MILESTONE-03.md) — 原型骨架就绪: scratch 扩展 `~/.pi/agent/extensions/subagent-panel-proto/` + 假工具 `subagent_proto` (single 7 步/parallel 5 步回放, 时序对照 single.ts:811-904 与 index.ts:265-275), pty 实测 25/25 通过, `/reload` 热载 902ms 生效; `types.ts` 契约 M04+ 直接复用. 报告: [milestone-03-report.md](../milestone-03/milestone-03-report.md).
 - [MILESTONE-04](MILESTONE-04.md) — Run Card 原型评审收口: **变体 C 分段展开** (recentTools 逐条行 + parallel child 双行树形) 选定; 默认密度 cozy; 截断维持 PRD §4.0; 新增 CH 缓存命中率展示段 (cacheRead 派生, tokens 后 cost 前, cozy 限定, 待 M07 落 PRD); **F1 升级** → MILESTONE-17. 报告: [milestone-04-report.md](../milestone-04/milestone-04-report.md); 原型源码归档 [../milestone-04/prototype/](../milestone-04/prototype/).
 - [MILESTONE-05](MILESTONE-05.md) — Widget/Footer 原型评审收口: widget **belowEditor + 5 行**; footer **与内建共存** (setFooter factory 拿 footerData 做两行自定义, 不接受替换); MAX_WIDGET_LINES=10 / factory 不保证每步刷新等 API 事实入档. 报告: [milestone-05-report.md](../milestone-05/milestone-05-report.md).
-- [MILESTONE-06](MILESTONE-06.md) — Session Viewer 定稿 (v2): **tab = 批次子代理 + 首 tab 批次时间线** (上早下晚, Enter 换批), 子代理会话视觉对齐 pi transcript; Tab/Shift+Tab/←/→/数字键, 自绘滚动过关, 始终全屏, Esc+toggle 关闭, 不做 overlay 内回放. PRD §5 待按 v2 重写 (原内容分类 tab 归属 M07 盘). 报告: [milestone-06-report.md](../milestone-06/milestone-06-report.md).
+- [MILESTONE-06](MILESTONE-06.md) — Session Viewer 定稿 (v2): **tab = 批次子代理 + 首 tab Timeline 批次时间线** (上早下晚, Enter 换批), 子代理会话视觉对齐 pi transcript; Tab/Shift+Tab/←/→/数字键, 自绘滚动过关, 始终全屏, Esc+toggle 关闭, 不做 overlay 内回放. 报告: [milestone-06-report.md](../milestone-06/milestone-06-report.md).
+- [MILESTONE-07](MILESTONE-07.md) — 定稿盘问闭环, **PRD v2.0 确认版落盘**: 形态 A+D+E (B/C 出局); Run Card 变体 C + spinner 动效 + CH 段; Viewer = Timeline + 子代理会话 tab; 命令面 /agent-sessions (alt+v) + /agent-diagnose; 无手动 copy/resume 入口; 数据源内存+磁盘回补 20 批; 测试策略 (node --test + pty 冒烟). 账本: [DECISIONS.md](../milestone-07/DECISIONS.md) (D001-D013, F001-F005); 领域语言 [docs/language/UBIQUITOUS_LANGUAGE.md](../../language/UBIQUITOUS_LANGUAGE.md) 首建.
 
 ## 前沿
 
-- [MILESTONE-07](MILESTONE-07.md) — `deliberate` — 交互评审 + PRD 定稿 (原型轮全部完成, 已解锁)
+- [MILESTONE-08](MILESTONE-08.md) — `deliberate` — 实现方案定稿 (施工闸门, 已解锁)
 
 ## 未决迷雾
 
@@ -60,17 +61,17 @@
 - **patch / fork pi 本体** — 扩展 API 覆盖面足够, 缺口记限制. 排除原因: 目的地边界, 用户已确认.
 - **PRD §11 全清单 (修正版)** — 无限子代理树可视化 / parallel resume / waiting_input 等运行时无事件的一等状态 (queued 禁令收窄: parallel child 的 `pending` 已纳入范围, 见补充决策) / skill 独立分类 / Diagnose 自动修复 / 日志做 metrics 后端 / 从磁盘反推运行中状态 / list 名册面板化. 排除原因: PRD 已明确不做, 与目的地无关.
 - **语义层"未达到目标"自动判断** — 运行时无信号可观测结果质量, 需引入 LLM 评审, 超出可观测性范围. 排除原因: 用户已确认边界, 属另一个产品.
+- **B/C 形态实现 (原 M15)** — M07 裁决: widget 面板实测否决, footer 摘要无诉求; 实时观测面只有 Inline Run Card. 关闭原因: 条件里程碑条件未触发 (M07 D006).
 
 ## 阻塞关系
 
 ```
 M04 ─┐
 M05 ─┼─→ M07 ─→ M08 ─→ M09 ─→ M10 ─→ M17 ─→ M11 ─┬─→ M12 ─┐
-M06 ─┘                                           ├─→ M13 ─┤
-                                                 ├─→ M14 ─┼─→ M16 ─→ ◆ 实际交付
-                                                 └─→ M15 ─┘
+M06 ─┘                                           ├─→ M13 ─┼─→ M16 ─→ ◆ 实际交付
+                                                 └─→ M14 ─┘
 ```
 
-- M07 阻塞于 M04(已关闭), M05, M06 (M02 已关闭); M08 阻塞于 M07.
-- M09–M10 串行; M17 (F1 转化) 阻塞于 M10, 阻塞 M11; M12–M15 并行阻塞于 M11; M15 另需 M07 决策升级 (条件里程碑, 不升级则关闭记因).
-- M16 阻塞于 M12, M13, M14, M15.
+- M07 阻塞于 M04, M05, M06 (均已关闭); M08 阻塞于 M07 (已关闭) → M08 即前沿.
+- M09–M10 串行; M17 (F1 转化) 阻塞于 M10, 阻塞 M11; M12–M14 并行阻塞于 M11; M15 已关闭记因 (B/C 不升级).
+- M16 阻塞于 M12, M13, M14.

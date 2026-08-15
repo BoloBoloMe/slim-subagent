@@ -1,6 +1,7 @@
 # pi agent — Subagent Observability 产品规格（唯一版）
 
-版本：v1.3-observability（2026-08-15 M02 契约修订：ctx 子代理口径 / final details 补字段 / taskPreview 规则 / endedAtMs 记录 / L16 阈值预警 + L13/L14 定界 / R5 节点键 / pending 状态 / resume startedAtMs 口径）  
+版本：v2.0-确认版（2026-08-15 M07 定稿：形态裁决 A+D+E / Run Card 变体 C / spinner 动效 / CH 字段 / Session Viewer 批次时间线重定义 / footer 与 widget 面板出局 / 命令面 /agent-sessions + /agent-diagnose / 无手动 copy·resume 入口）  
+前身：v1.3-observability（M02 契约修订：ctx 子代理口径 / final details 补字段 / taskPreview 规则 / endedAtMs 记录 / L16 阈值预警 + L13/L14 定界 / R5 节点键 / pending 状态 / resume startedAtMs 口径）  
 基线仓库：`BoloBoloMe/slim-subagent`  
 基线 commit：`492d9f35fa7319da50028dbc5bb9088ee8e4e6bb`（2026-08-13）  
 中心主题：**提高子代理调度的可观测性**。所有功能都围绕一个目标：让每次委派“看得见状态、追得回现场、查得到错误、给得出修复建议”。  
@@ -23,11 +24,10 @@
 4. **Operational logs**：父进程在关键路径写出的结构化日志，尤其失败/崩溃/错误点。
 
 ### 1.4 形态分级
-- **A Inline Live Run Card（MUST）**：增强 `subagent` 工具 render/onUpdate 消费。
-- **B Mini Footer Summary（SHOULD）**：pi 有 footer/status/header 面时显示聚合摘要。
-- **C Persistent Above-Composer Panel（COULD）**：依赖 pi 持久面板 API。
-- **D Session Viewer（MUST）**：Panel/Run Card 的只读详情入口。
-- **E Structured Logs + Diagnose（MUST，本版新增）**：日志落盘 `~/.pi/subagent_log/`，7 日 GC，提供用户可调用诊断命令。
+- **A Inline Live Run Card（MUST）**：增强 `subagent` 工具 render/onUpdate 消费；唯一常驻实时观测面 (M07 裁决, 结构见 §4.1)。
+- **D Session Viewer（MUST）**：Run Card 的只读详情入口；批次时间线 + 子代理会话 tab (M07 重定义, 见 §5)。
+- **E Structured Logs + Diagnose（MUST）**：日志落盘 `~/.pi/subagent_log/`，7 日 GC，提供用户可调用诊断命令。
+- ~~B Mini Footer Summary / C Persistent Panel~~：M07 原型评审后出局，进 §11 不做清单。
 
 ---
 
@@ -114,65 +114,61 @@ type RunNode = {
 | 超时设置 timeout | 仅显式设置才展示，如 `timeout 300s`；未设置不展示，不显示默认 15min | 调用参数 `timeoutMs` / `tasks[i].timeoutMs` |
 | token 消耗上限 budget | 仅显式 `usageBudget` 才展示，如 `cap 50k`；未设置不展示；自动 70% 只进 Diagnostics/logs | 调用参数 `usageBudget` / `tasks[i].usageBudget`；final `details.usageBudget+budgetAuto` 校验 |
 | 上下文窗口占用 ctx | 有数据必显 `ctx 18%`；未知 `ctx —`；不伪造 | 子代理口径：`contextTokens / resolveModelWindow(子模型)`；窗口优先运行时 `details.model`，退化调用侧 effective model |
+| 缓存命中率 CH | 有 cacheRead 数据必显 `CH 87%`；无数据不显；仅 cozy 密度显示 | 派生自 `usage.cacheRead / (cacheRead + input)`，无需新数据字段 (M07) |
 
-紧凑行字段优先级：status icon → agent → status 文案 → model → ctx% → elapsed → usage tokens → timeout(仅显式) → cap(仅显式) → cost → taskPreview/recent。窄行省略顺序：cost → cap → timeout → recent → taskPreview → usage tokens（保留 status/model/ctx/elapsed）。
+紧凑行字段优先级：status icon → agent → status 文案 → model → ctx% → elapsed → usage tokens → CH → timeout(仅显式) → cap(仅显式) → cost → taskPreview/recent。窄行省略顺序：cost → CH → cap → timeout → recent → taskPreview → usage tokens（保留 status/model/ctx/elapsed）。
+
+密度开关 (M07 定)：默认 **cozy** (全字段)；compact 预省 cost/CH/cap/timeout。
 
 ### 4.1 Inline Live Run Card（MUST）
+结构 = M04 原型**变体 C 分段展开** (M07 定稿)：状态行 + recentTools 逐条行 + output 预览行。
+
 执行中 single：
 ```text
-⠿ explorer · active 00:37 · model openai/x · ctx 18% · ↑12.1k ↓3.4k W0.8k $0.0412 · timeout 300s · cap 50k
-   task 搜索当前目录结构 · recent: read src/ · grep "subagent" · last: "找到 3 个候选入口…"
-   [Open session] [Copy runId] [Diagnose]
+⠿ explorer · active 00:37 · model openai/x · ctx 18% · ↑12.1k ↓3.4k W0.8k CH87% · $0.0412 · timeout 300s · cap 50k
+   → read src/index.ts
+   → grep "subagent"
+   last: "找到 3 个候选入口…"
+   alt+v 会话 · /agent-diagnose 诊断
 ```
-timeout/cap 未显式设置则整段省略；model/ctx 未知显示 `—`/`ctx —`。
+active 图标为**动画 spinner** (⠋⠙⠹… 90ms 帧轮转, renderResult 第 4 参 `context.invalidate()` 驱动重绘, 与数据更新解耦)；终态静态 (✓/✗)。recentTools 最多 3 条 (expanded 可到 10 条)。timeout/cap 未显式设置则整段省略；model/ctx 未知显示 `—`/`ctx —`。
 
-执行中 parallel：
+执行中 parallel (child 双行树形)：
 ```text
-◐ parallel · 2/4 done · active 01:12 · total ↑31.2k ↓9.1k $0.2210
-   ✓ worker   · done 00:44    · model a/fast · ctx 12% · ↑8.1k ↓2.0k · timeout 60s        [Open session]
-   ✗ reviewer · failed 00:51  · model b/pro  · ctx 31% · stop error · cap 80k             [Open session] [Copy resume cmd] [Diagnose]
-   ⠿ worker   · active        · model a/fast · ctx —   · timeout 300s                     [Open session]
-   ⠿ explorer · active        · model —      · ctx —                                        [Open session]
+◐ parallel · 2/4 done · active 01:12 · total ↑31.2k ↓9.1k CH72% · $0.2210
+   ✓ worker   · done 00:44 · model a/fast · ctx 12% · ↑8.1k ↓2.0k · timeout 60s
+     → pnpm lint
+   ✗ reviewer · failed 00:51 · model b/pro · ctx 31% · stop error · cap 80k
+     last: "审查发现 2 处…"
+   ⠿ worker   · active · model a/fast · ctx — · timeout 300s
+     → read src/
+   ◌ explorer · pending 等待并发槽 · task 收集测试用例
 ```
+pending 行只显示 agent + taskPreview + `pending 等待并发槽`（无 model/ctx/elapsed/usage，不伪造）；L30 scheduled 后转 active 行。
 
-批次开始（tasks > 并发 4）时未进 worker 的 child 预建行：
-```text
-   ◌ reviewer · pending 等待并发槽 · task 审查登录模块
-```
-pending 行只显示 agent + taskPreview + `pending 等待并发槽`，无 model/ctx/elapsed/usage（均未产生，不伪造）；L30 scheduled 后转 active 行。
-
-### 4.2 Mini Footer Summary（SHOULD）
-```text
-Agents 2/4 · attention 1 · 40.3k tok · $0.26 · errors 2
-```
-无 active 且无未确认 attention 时隐藏；点击聚焦最近 attention 行；`errors` 来自今日 error/fatal 日志计数，可与 attention 不一致（例如校验错误未产生 run）。
-
-### 4.3 Persistent Panel（COULD）
-transcript 下、composer 上；树深度硬限制 2；提供 column 配置以显隐 timeout/cap/ctx/cost。
+操作呈现 (M07 定)：不提供卡上按钮/复制类操作；提示文案固定 `alt+v 会话 · /agent-diagnose 诊断`。**无手动 copy runId / copy resume cmd 入口** — resume 是父会话自主决策。
 
 ---
 
-## 5. Session Viewer 规格（单次现场面）
+## 5. Session Viewer 规格（单次现场面）— M07 重定义
+capturing 全屏 overlay (自绘, pi-tui 无 ScrollView/Tab 组件)；fire-and-forget 打开 (命令/快捷键 handler 内禁止 await, M01 硬约束)。
 
-入口 MUST：每个 Run Node 行有 `Open session`；parallel root 开批次总览，child 开 `run-<index>/session.jsonl`；失败/timeout/budget 行把 `Open session`、`Copy resume command`、`Diagnose` 作为主操作；Viewer 打开后 `Esc` 可返回。
+**信息组织 (v2 定稿)**：tab 栏 = 所选批次的子代理；首 tab 为 `Timeline`。
 
-切换 MUST：Viewer 与 Panel 共用 `selectedRunId`；active 默认 `followLive=true`，用户上翻后 false；archived 单独分区 `Archived (not running)`；active 与 archived 同 runId 冲突时 active 优先。
+- **Timeline tab**：父会话历史上所有子代理**批次**的时间线 (一次工具调用 = 一个批次, single 调用也算)，按创建时间上早下晚。行 = 时间 + 模式 (single/parallel) + agent 列表 + 状态摘要 (如 `2/4 done · 1 failed`)。↑/↓ 选批次，Enter 确认 → 其余 tab 切换为该批次子代理。默认选中最新批次。
+- **子代理 tab**：该子代理的会话内容，**视觉风格对齐 pi 父会话 transcript** (user/assistant/工具调用块)；active 子代理 followLive=true，用户上翻解除并提示，回到底恢复。底部状态区一行：ctx% / budget (区分显式 cap 与自动 70%) / hint / 关联 log event ids (即 v1 Diagnostics 内容并入此处)。
 
-布局：
-```text
-Subagent session · explorer · done · run-20260813-173645-681cce
-model openai/x · ctx 18% · usage ↑12.1k ↓3.4k R0 W0.8k $0.0412 · timeout 300s(显式) · cap 50k(显式)
-budget effective 89.6k(auto 70%) · sessionDir ~/.pi/agent/slim-subagent/sessions/run-.../
-logs ~/.pi/subagent_log/subagent-20260813.log (event L27 close)   [Copy runId] [Copy resume cmd] [Diagnose] [Open folder]
+**键盘流 (M07 定)**：Tab/Shift+Tab 循环 + ←/→ 切 tab；数字键直跳；↑/↓ 选择 (Timeline) 或滚动 (子代理 tab)；PgUp/PgDn 翻页；Enter 仅 Timeline 确认；Esc 关闭。**toggle 语义**：overlay 打开时再执行 `/agent-sessions` 或 `alt+v` = 关闭。
 
-[Conversation] [Tools 3] [Events/Raw 41] [Logs] [Diagnostics]
-```
-Tabs MUST：
-- Conversation/Tools/Events-Raw：同前版规则；有什么渲染什么；skill 只在有 `resolve_skill` 或同类证据时出现。
-- Logs：展示与该 runId/nodeId 关联的 operational logs，默认 info+，可切 level；error/fatal 置顶；不默认展开敏感 data。
-- Diagnostics：final `SingleDetails` 或 run.json 元数据；区分显式 timeout/cap 与实际生效 budget/timeout；显示关联 log event ids。
+**入口**：命令 `/agent-sessions` + 快捷键 `alt+v` (Windows 上 alt+v 被粘贴占用, 退回命令)；Run Card 提示文案 `alt+v 会话 · /agent-diagnose 诊断`。失败/timeout/budget 子代理的主操作 = Timeline 选中后进入其 tab + `d` 键诊断。**无 copy runId / copy resume cmd 按钮**。
 
-事实边界：不保证每个 run 都有完整 tool_execution 事件流；parallel child 完成前完整 transcript 不可用；resume 复用同一 sessionFile，当前无 boundary marker，只显示 `resumed` 徽章，不伪造分段。
+**viewer 内快捷键**：`d` = diagnose 当前 tab 子代理 (映射 §7 diagnose, 带 runId 上下文)。
+
+**宽度**：始终全屏, 不提供宽度调整。不做 overlay 内回放/演示功能。
+
+**数据源 (M07 定)**：内存 store 为主 (onUpdate 喂入)；启动时从磁盘 run 记录 (run.json + run-*/session.jsonl) 回补最近 20 批历史；不从磁盘反推运行中状态。
+
+事实边界：不保证每个 run 都有完整 tool_execution 事件流；parallel child 完成前完整 transcript 不可用 (M17 升级后 per-child 进度可透传)；resume 复用同一 sessionFile，无 boundary marker，只显示 `resumed` 徽章，不伪造分段。子代理会话渲染采用近似 pi transcript 的自绘方案，不追求逐像素一致。
 
 ---
 
@@ -274,7 +270,7 @@ type SubagentLog = {
 ### 7.1 调用面
 用户可调用：
 - 主命令：`subagent { action:"diagnose", id?: "<runId前缀|batchRunId#index|today>", since?: "24h|7d|all", levelMin?: "warn|error", limit?: number, writeReport?: boolean }`
-- 若 pi 支持 slash：`/agents diagnose [target] [since]` 映射到同一能力。
+- 若 pi 支持 slash：`/agent-diagnose [target] [since]` 映射到同一能力 (M07 定名)；Session Viewer 内 `d` 键 = 带当前 tab runId 上下文的等价调用。
 
 说明：当前仓库 schema 固定 9 参数且无 `diagnose` action；本功能是 MUST 产品需求，但实现上标记为 **slim-subagent schema/action 扩展**。不得用 `list/resume` 伪装诊断。
 
@@ -378,6 +374,9 @@ Diagnose MUST：
 ## 11. 明确不做（本基线）
 
 - 不做无限子代理树/递归 spawn 可视化。
+- **不做 Mini Footer Summary 与 Persistent Widget Panel**（M07 原型评审裁决：widget 面板实测被否决, footer 摘要用户无诉求；实时观测面只有 Inline Run Card）。
+- **不提供手动 copy runId / copy resume command 入口**（M07：用户无 copy 场景；resume 是父会话自主决策, 非用户手动操作）。
+- 不做 Session Viewer 宽度调整（始终全屏）与 overlay 内回放/演示功能。
 - 不承诺 parallel per-child 实时进度或实时完整会话，除非先改 slim-subagent。
 - 不把 `action:"list"` 名册面板化。
 - 不从磁盘 session/log 目录恢复“正在运行”状态。
@@ -396,6 +395,6 @@ Diagnose MUST：
 2. 补失败/崩溃点：timeout/budget（含 L16 80% 预警）/protocol/abort/drain/signal/empty output（L11-L26）、parallel（L28-L32）、resume（L33-L39）。
 3. 写 `projectSlimDetailsToRunNodes`：投影 details + 捕获调用侧展示字段（model override、显式 timeoutMs、显式 usageBudget、tasks[i] 覆盖），标 modelSource，关联 logCursor；`assembleSingleResult` 单点补丁：final details 补 `mode/agent/taskPreview/timeoutMsExplicit/startedAtMs/endedAtMs`、ctx 改子代理口径（删除父会话 getContextUsage 透传）、run.json settle 补丁写。
 4. 增强 `renderResult`：partial live card、final 结果卡；执行第 4.0 必填字段与省略规则；错误行挂 `Diagnose`。
-5. 加 Session Viewer：Inline 工具卡内 Session tab 先行；tolerant JSONL reader；Logs tab 关联 runId/nodeId；Persistent Panel 后再做 master-detail。
-6. 加 `action:"diagnose"`：扩展 schema/action；实现 target 解析、log/session 证据收集、启发式 findings、可选 report 写入；`/agents diagnose` 若 pi 支持再映射。
-7. 若 pi 有 footer/status 面加 mini summary；若 pi 有持久 panel API 再启动形态 C；否则交付 A+D+E(+B) 并写明限制。
+5. 加 Session Viewer：Timeline 批次时间线 + 子代理会话 tab (视觉对齐 pi transcript)；内存 store + 磁盘回补 20 批；tolerant JSONL reader；键盘流/toggle/followLive 按 §5。
+6. 加 `action:"diagnose"`：扩展 schema/action；实现 target 解析、log/session 证据收集、启发式 findings、可选 report 写入；映射 `/agent-diagnose`。
+7. 无 footer/widget 形态 (M07 裁决)；交付 A+D+E。
