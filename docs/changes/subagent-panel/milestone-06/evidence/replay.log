@@ -1,0 +1,8 @@
+{"event":"ext.loaded","pid":140143,"ts":1786801931492,"logFile":"/var/mnt/DATA/Workspace/subagent/docs/changes/subagent-panel/milestone-06/evidence/replay.log","marker":"proto-v1"}
+{"event":"replay.step","source":"viewer","mode":"single","scenario":"success","stepIndex":0,"kind":"initial","atMs":0,"ts":1786801940470,"text":"(running...)","statuses":["active"],"marker":"proto-v1"}
+{"event":"replay.step","source":"viewer","mode":"single","scenario":"success","stepIndex":1,"kind":"message_end","atMs":700,"ts":1786801941172,"text":"开始分析目录结构...","statuses":["active"],"marker":"proto-v1"}
+{"event":"replay.step","source":"viewer","mode":"single","scenario":"success","stepIndex":2,"kind":"tool_start","atMs":1400,"ts":1786801941871,"text":"read src/index.ts","statuses":["active"],"marker":"proto-v1"}
+{"event":"replay.step","source":"viewer","mode":"single","scenario":"success","stepIndex":3,"kind":"tool_end","atMs":1900,"ts":1786801942370,"text":"read src/index.ts 完成","statuses":["active"],"marker":"proto-v1"}
+{"event":"replay.step","source":"viewer","mode":"single","scenario":"success","stepIndex":4,"kind":"tool_result_end","atMs":2500,"ts":1786801942970,"text":"(running...)","statuses":["active"],"marker":"proto-v1"}
+{"event":"replay.step","source":"viewer","mode":"single","scenario":"success","stepIndex":5,"kind":"message_end","atMs":3100,"ts":1786801943570,"text":"已读取 src/index.ts, 找到 3 个候选入口","statuses":["active"],"marker":"proto-v1"}
+{"event":"replay.step","source":"viewer","mode":"single","scenario":"success","stepIndex":6,"kind":"close","atMs":3800,"ts":1786801944272,"text":"任务完成: 找到 3 个候选入口","statuses":["done"],"marker":"proto-v1"}

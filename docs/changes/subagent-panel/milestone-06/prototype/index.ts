@@ -1,0 +1,1155 @@
+/**
+ * subagent-panel-proto — M04 Inline Run Card + M05 Widget/Footer + M06 Session Viewer 原型
+ *
+ * 注册:
+ *   - 假工具 `subagent_proto` {mode:"single"|"parallel", scenario?}
+ *     execute 按真实触发点分布定时 onUpdate, details=ProtoDetails 全量快照
+ *   - 命令 `/subagent-proto` (single/parallel/storm/parallel-pending 回放;
+ *     variant a|b|c 变体切换; density compact|cozy 密度切换;
+ *     M05: widget above|below|off 面板; widget-height 1|3|5 高度; footer on|off 摘要; status;
+ *     M06: view 打开 Session Viewer (capturing overlay, fire-and-forget);
+ *     view-width 70|100 切 overlay 宽度百分比 vs 全屏)
+ *   - 快捷键 alt+v 打开 Session Viewer
+ *   - JSONL 日志 (replay.log, PI_SUBAGENT_PROTO_LOG 可覆盖), MARKER=proto-v1
+ *
+ * M06 (Session Viewer, PRD §5, 形态受 M01 结论约束):
+ *   - `/subagent-proto view`: capturing overlay 全屏自绘面板, fire-and-forget 打开 (不 await, 防冻结主循环);
+ *     Esc=done(null) 关闭.
+ *   - 5 tab: Conversation/Tools/Events-Raw/Logs/Diagnostics; 键盘流 Tab/Shift+Tab/←/→ 切 tab,
+ *     1-5 直跳, ↑/↓ 步进, PgUp/PgDn 翻页, Home/End 首尾; pi-tui 无 ScrollView → 自维护 scroll offset (viewer.ts).
+ *   - followLive: Events-Raw/Logs 回放中自动滚到底, 用户上翻解除 (footer 显 "已暂停 follow"), 回底恢复;
+ *     capturing 吞键盘 → 命令无法在打开时输入, overlay 内 r/shift+r 直接启动 single/parallel 回放演示 followLive.
+ *   - `/subagent-proto view-width 70|100` 切宽度 (下次打开生效); overlay 内 w 键即时切换 (重开保留状态).
+ *   - 数据源: latestDetails (最近一次回放), 无数据时 demo 快照 (parallel-pending step1).
+ *
+ * M05 (考察点):
+ *   - Widget 面板: ctx.ui.setWidget(key, string[], {placement}) 树形摘要
+ *     (变体 C 风格: 聚合行 + child 状态行, pending ◌); 高度 1=单行汇总 /
+ *     3=聚合+前2 child / 5=聚合+前4 child; 回放每步同 key 重复 setWidget 刷新;
+ *     无活跃 run 时显示静态演示快照 (parallel-pending step1).
+ *   - Footer 摘要: ctx.ui.setFooter(factory) 渲染 PRD §4.2 单行
+ *     `Agents 2/4 · attention 1 · 40.3k tok · $0.26 · errors 2` (从快照推导);
+ *     每步刷新: factory 内捕获 tui → requestRender. footer off → setFooter(undefined).
+ *   - 状态为模块级, session_start 用新 ctx 重放 applyPanel 重建 (热载旧 ctx 失效坑沿用 M04).
+ *
+ * 渲染 (M04 考察点):
+ *   renderCall  = 调用摘要行 (含 [proto] mode=... 标记)
+ *   renderResult = Inline Run Card 三变体:
+ *     A PRD 双行卡   B 单行致密 (PRD §4.0 窄行省略)   C 分段展开 (recentTools/last output)
+ *   图标 ⠿(active) ◐(parallel root) ✓(done) ✗(failed) ◌(pending), 主题语义色.
+ *   宽度: Component.render(width) 传入真实可用宽度, 兜底 process.stdout.columns.
+ */
+import type { Component, OverlayHandle } from "@earendil-works/pi-tui";
+import { Box, Text } from "@earendil-works/pi-tui";
+import type { AgentToolUpdateCallback, ExtensionAPI, ExtensionCommandContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { createReplay, getLogFile, logEvent, MARKER } from "./replay.ts";
+import { SessionViewerComponent } from "./viewer.ts";
+import type { ProtoDetails, ProtoRunNode } from "./types.ts";
+
+// ---------------------------------------------------------------------------
+// 顶层热载标记 (moduleCache:false 重导入 → 新 marker 落盘)
+// ---------------------------------------------------------------------------
+try {
+  logEvent({ event: "ext.loaded", pid: process.pid, ts: Date.now(), logFile: getLogFile() });
+} catch {
+  /* best-effort */
+}
+
+// ---------------------------------------------------------------------------
+// M04 变体/密度模块级状态
+// ---------------------------------------------------------------------------
+type VariantId = "a" | "b" | "c";
+type Density = "compact" | "cozy";
+let currentVariant: VariantId = "c";
+let currentDensity: Density = "cozy";
+/** inline Run Card 开关 (形态 A 存废预览: off = widget 独挑, transcript 只留一行占位) */
+let inlineCard = true;
+
+const VARIANT_NAMES: Record<VariantId, string> = {
+  a: "PRD 双行卡",
+  b: "单行致密",
+  c: "分段展开",
+};
+
+// ---------------------------------------------------------------------------
+// M05 Widget 面板 + Footer 摘要 模块级状态 (PRD §4.2/§4.3)
+//   状态为模块级: /reload 后重置 (与 M04 variant/density 同模式);
+//   session_start 用新 ctx 重放 applyPanel 重建 (热载旧 ctx 失效坑).
+// ---------------------------------------------------------------------------
+type WidgetPlacementId = "aboveEditor" | "belowEditor";
+type WidgetHeight = 1 | 3 | 5;
+const WIDGET_KEY = "subagent-panel-proto";
+let widgetPlacement: WidgetPlacementId | "off" = "off";
+let widgetHeight: WidgetHeight = 5;
+let footerEnabled = false;
+let latestDetails: ProtoDetails | null = null;
+let lastUi: ExtensionUIContext | null = null;
+let footerInstalled = false;
+let footerTui: { requestRender(force?: boolean): void } | null = null;
+let latestFooterLine: string | null = null;
+let demoDetails: ProtoDetails | null = null;
+
+// ---------------------------------------------------------------------------
+// M06 Session Viewer 模块级状态
+//   viewerOpen/capturing overlay: 键盘全归 overlay, 命令无法在打开时输入;
+//   状态 (tab/scroll/follow) 由 viewer.ts 模块级持有, 重开保留. 事件/日志缓冲按 runId 重置.
+// ---------------------------------------------------------------------------
+type ViewerWidth = 70 | 100;
+let viewWidth: ViewerWidth = 100;
+let viewerOpen = false;
+let viewerHandle: OverlayHandle | null = null;
+let viewerTui: { requestRender(force?: boolean): void } | null = null;
+let viewerDone: (() => void) | null = null;
+let lastViewerUi: ExtensionUIContext | null = null;
+let viewerEventBuf: string[] = [];
+let viewerLogBuf: string[] = [];
+let viewerStep = 0;
+let viewerRunKey = "";
+
+// ---------------------------------------------------------------------------
+// 通用工具函数
+// ---------------------------------------------------------------------------
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** 显示宽度: 全角字符记 2 列 */
+function dispLen(s: string): number {
+  let n = 0;
+  for (const ch of Array.from(s)) {
+    const cp = ch.codePointAt(0)!;
+    n += cp > 0x2e7f ? 2 : 1;
+  }
+  return n;
+}
+
+function truncate(s: string, max: number): string {
+  if (max <= 0) return "";
+  const chars = Array.from(s);
+  if (dispLen(s) <= max) return s;
+  let acc = 0;
+  const out: string[] = [];
+  for (const ch of chars) {
+    const w = dispLen(ch);
+    if (acc + w > max - 1) break;
+    acc += w;
+    out.push(ch);
+  }
+  return out.join("") + "…";
+}
+
+function fmtT(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 10000) return `${(n / 1000).toFixed(1)}k`;
+  return `${Math.round(n / 1000)}k`;
+}
+
+function elapsedStr(node: ProtoRunNode, now: number): string {
+  const start = node.startedAtMs;
+  if (start === undefined) return "";
+  const end = node.endedAtMs ?? now;
+  const s = Math.max(0, Math.floor((end - start) / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+}
+
+function ctxStr(node: ProtoRunNode): string {
+  if (node.contextPercent === undefined || node.contextPercent === null) return "ctx —";
+  return `ctx ${node.contextPercent}%`;
+}
+
+function statusOf(node: ProtoRunNode): { icon: string; label: string; color: string } {
+  switch (node.status) {
+    case "active": return { icon: "⠿", label: "active", color: "accent" };
+    case "done": return { icon: "✓", label: "done", color: "success" };
+    case "failed": return { icon: "✗", label: "failed", color: "error" };
+    case "timeout": return { icon: "✗", label: "timeout", color: "warning" };
+    case "budget": return { icon: "✗", label: "budget", color: "warning" };
+    case "cancelled": return { icon: "✗", label: "cancelled", color: "warning" };
+    case "pending": return { icon: "◌", label: "pending 等待并发槽", color: "muted" };
+    default: return { icon: "⠿", label: node.status, color: "muted" };
+  }
+}
+
+interface Seg {
+  plain: string;
+  color: string;
+  drop?: number; // 窄行省略优先级: 值越小越先丢; undefined=必留
+}
+
+function usageSegs(node: ProtoRunNode): { tokens: Seg; cost: Seg } | null {
+  const u = node.usage;
+  if (!u) return null;
+  let tokens = `↑${fmtT(u.input)} ↓${fmtT(u.output)}`;
+  if (u.cacheRead > 0) tokens += ` R${fmtT(u.cacheRead)}`;
+  if (u.cacheWrite > 0) tokens += ` W${fmtT(u.cacheWrite)}`;
+  return {
+    tokens: { plain: tokens, color: "text", drop: 5 },
+    cost: { plain: `$${u.cost.toFixed(4)}`, color: "muted", drop: 0 },
+  };
+}
+
+function timeoutSeg(node: ProtoRunNode): Seg | null {
+  if (node.timeoutMsExplicit === undefined) return null;
+  return { plain: `timeout ${node.timeoutMsExplicit / 1000}s`, color: "muted", drop: 2 };
+}
+
+function capSeg(node: ProtoRunNode): Seg | null {
+  if (node.usageBudgetExplicit === undefined) return null;
+  return { plain: `cap ${fmtT(node.usageBudgetExplicit)}`, color: "muted", drop: 1 };
+}
+
+function stopSeg(node: ProtoRunNode): Seg | null {
+  if (!node.stopReason || node.status === "done" || node.status === "active") return null;
+  return { plain: `stop ${node.stopReason}`, color: "warning", drop: -1 };
+}
+
+/** PRD §4.0 窄行省略: 按优先级丢 cost→cap→timeout→recent→task→usageTokens, 保留 status/model/ctx/elapsed */
+function renderSegLine(segs: Seg[], theme: ThemeLike, maxWidth: number): string {
+  const active = segs.filter((s) => s.plain.length > 0);
+  let total = active.reduce((a, s) => a + dispLen(s.plain), 0) + (active.length - 1) * 3;
+  while (total > maxWidth) {
+    let idx = -1;
+    let bestDrop = Infinity;
+    for (let i = 0; i < active.length; i++) {
+      const s = active[i];
+      if (s.drop === undefined) continue;
+      if (s.drop < bestDrop) {
+        bestDrop = s.drop;
+        idx = i;
+      } else if (s.drop === bestDrop) {
+        idx = i; // 同优先级取最右
+      }
+    }
+    if (idx === -1) break;
+    active.splice(idx, 1);
+    total = active.reduce((a, s) => a + dispLen(s.plain), 0) + (active.length - 1) * 3;
+  }
+  if (active.length === 0) return "";
+  if (total > maxWidth && active.length > 0) {
+    const others = active.slice(0, -1).reduce((a, s) => a + dispLen(s.plain), 0) + (active.length - 1) * 3;
+    const last = active[active.length - 1];
+    last.plain = truncate(last.plain, maxWidth - others);
+  }
+  return active.map((s) => theme.fg(s.color as any, s.plain)).join(theme.fg("muted", " · "));
+}
+
+function pendingLine(node: ProtoRunNode, theme: ThemeLike, indent: string, width: number): string {
+  return indent + theme.fg("muted", `◌ ${node.agent} · pending 等待并发槽 · task ${truncate(node.taskPreview, Math.max(8, width - dispLen(indent) - 2))}`);
+}
+
+function opsHint(node: ProtoRunNode, theme: ThemeLike): string {
+  const failed = node.status === "failed" || node.status === "timeout" || node.status === "budget";
+  if (node.kind === "parallel-child" && node.status !== "done" && !failed) return theme.fg("dim", "[Open session]");
+  if (failed) return theme.fg("dim", "[Open session] [Copy resume cmd] [Diagnose]");
+  if (node.kind === "parallel-child") return theme.fg("dim", "[Open session]");
+  return theme.fg("dim", "[Open session] [Copy runId] [Diagnose]");
+}
+
+function recentLine(node: ProtoRunNode, theme: ThemeLike, indent: string, width: number): string {
+  const segs: string[] = [];
+  const rt = node.progress?.recentTools ?? [];
+  if (rt.length > 0) segs.push(`recent: ${rt.map((t) => `${t.tool} ${t.argsPreview}`).join(" · ")}`);
+  const out = node.progress?.recentOutput ?? [];
+  if (out.length > 0) segs.push(`last: "${truncate(out[out.length - 1], 40)}"`);
+  if (segs.length === 0) return "";
+  const line = `task ${node.taskPreview}` + (segs.length > 0 ? ` · ${segs.join(" · ")}` : "");
+  return indent + theme.fg("text", truncate(line, Math.max(8, width - dispLen(indent))));
+}
+
+// ---------------------------------------------------------------------------
+// 变体 A: PRD 双行卡 (§4.1 样例原样)
+// ---------------------------------------------------------------------------
+function statusRowSegs(node: ProtoRunNode, theme: ThemeLike, density: Density): Seg[] {
+  const st = statusOf(node);
+  const now = Date.now();
+  const segs: Seg[] = [
+    { plain: `${st.icon} ${node.agent}`, color: st.color },
+    { plain: [st.label, elapsedStr(node, now)].filter(Boolean).join(" "), color: st.color },
+    { plain: `model ${node.model ?? "—"}`, color: "text" },
+    { plain: ctxStr(node), color: "text" },
+  ];
+  const us = usageSegs(node);
+  if (us) {
+    segs.push(us.tokens);
+    if (density === "cozy") segs.push(us.cost);
+  }
+  const stop = stopSeg(node);
+  if (stop && density === "cozy") segs.push(stop);
+  const t = timeoutSeg(node);
+  if (t && density === "cozy") segs.push(t);
+  const c = capSeg(node);
+  if (c && density === "cozy") segs.push(c);
+  return segs;
+}
+
+function aSingleCard(details: ProtoDetails, theme: ThemeLike, width: number, density: Density): string[] {
+  const node = details.nodes[0];
+  const lines: string[] = [renderSegLine(statusRowSegs(node, theme, density), theme, width)];
+  const recent = recentLine(node, theme, "   ", width);
+  if (recent) lines.push(recent);
+  lines.push("   " + opsHint(node, theme));
+  return lines;
+}
+
+function aChildLine(child: ProtoRunNode, theme: ThemeLike, width: number, density: Density): string {
+  if (child.status === "pending") return pendingLine(child, theme, "   ", width);
+  const st = statusOf(child);
+  const now = Date.now();
+  const segs: Seg[] = [
+    { plain: `${st.icon} ${child.agent}`, color: st.color },
+    { plain: [st.label, elapsedStr(child, now)].filter(Boolean).join(" "), color: st.color },
+    { plain: `model ${child.model ?? "—"}`, color: "text" },
+    { plain: ctxStr(child), color: "text" },
+  ];
+  const us = usageSegs(child);
+  if (us) {
+    segs.push(us.tokens);
+    if (density === "cozy") segs.push(us.cost);
+  }
+  const stop = stopSeg(child);
+  if (stop && density === "cozy") segs.push(stop);
+  const t = timeoutSeg(child);
+  if (t && density === "cozy") segs.push(t);
+  const c = capSeg(child);
+  if (c && density === "cozy") segs.push(c);
+  segs.push({ plain: opsHint(child, theme).replace(/\x1b\[[0-9;]*m/g, ""), color: "dim", drop: -2 });
+  return "   " + renderSegLine(segs, theme, Math.max(8, width - 3));
+}
+
+function aParallelCard(details: ProtoDetails, theme: ThemeLike, width: number, density: Density): string[] {
+  const root = details.nodes[0];
+  const b = details.batch;
+  const now = Date.now();
+  const st = statusOf(root);
+  const segs: Seg[] = [
+    { plain: `◐ parallel`, color: "accent" },
+    { plain: `${b?.done ?? 0}/${b?.total ?? 0} done`, color: "text" },
+    { plain: [st.label, elapsedStr(root, now)].filter(Boolean).join(" "), color: st.color },
+  ];
+  if (details.usage) {
+    const u = details.usage;
+    let tokens = `total ↑${fmtT(u.input)} ↓${fmtT(u.output)}`;
+    if (u.cacheWrite > 0) tokens += ` W${fmtT(u.cacheWrite)}`;
+    segs.push({ plain: tokens, color: "text" });
+    if (density === "cozy") segs.push({ plain: `$${u.cost.toFixed(4)}`, color: "muted" });
+  }
+  const lines: string[] = [renderSegLine(segs, theme, width)];
+  for (const child of details.nodes.slice(1)) lines.push(aChildLine(child, theme, width, density));
+  return lines;
+}
+
+// ---------------------------------------------------------------------------
+// 变体 B: 单行致密 (严格 §4.0 窄行省略)
+// ---------------------------------------------------------------------------
+function bNodeSegs(node: ProtoRunNode, theme: ThemeLike, density: Density): Seg[] {
+  const st = statusOf(node);
+  const now = Date.now();
+  const segs: Seg[] = [
+    { plain: `${st.icon} ${node.agent}`, color: st.color },
+    { plain: [st.label, elapsedStr(node, now)].filter(Boolean).join(" "), color: st.color },
+    { plain: `model ${node.model ?? "—"}`, color: "text" },
+    { plain: ctxStr(node), color: "text" },
+  ];
+  const us = usageSegs(node);
+  if (us) {
+    segs.push(us.tokens);
+    if (density === "cozy") segs.push(us.cost);
+  }
+  const rt = node.progress?.recentTools ?? [];
+  const out = node.progress?.recentOutput ?? [];
+  if (density === "cozy") {
+    // recent 压缩为尾段单片段
+    let recent = "";
+    if (rt.length > 0) recent = `last: ${rt[rt.length - 1].tool} ${rt[rt.length - 1].argsPreview}`;
+    else if (out.length > 0) recent = `last: "${out[out.length - 1]}"`;
+    if (recent) segs.push({ plain: recent, color: "dim", drop: 3 });
+    segs.push({ plain: `task ${truncate(node.taskPreview, 30)}`, color: "text", drop: 4 });
+    const t = timeoutSeg(node);
+    if (t) segs.push(t);
+    const c = capSeg(node);
+    if (c) segs.push(c);
+  } else {
+    // compact: 预省略 recent (B 专属) + cost/cap/timeout
+    segs.push({ plain: `task ${truncate(node.taskPreview, 30)}`, color: "text", drop: 4 });
+  }
+  return segs;
+}
+
+function bCard(details: ProtoDetails, theme: ThemeLike, width: number, density: Density): string[] {
+  const lines: string[] = [];
+  if (details.mode === "single") {
+    const node = details.nodes[0];
+    lines.push(renderSegLine(bNodeSegs(node, theme, density), theme, width));
+  } else {
+    const root = details.nodes[0];
+    const b = details.batch;
+    const now = Date.now();
+    const st = statusOf(root);
+    const segs: Seg[] = [
+      { plain: `◐ parallel`, color: "accent" },
+      { plain: `${b?.done ?? 0}/${b?.total ?? 0} done`, color: "text" },
+      { plain: [st.label, elapsedStr(root, now)].filter(Boolean).join(" "), color: st.color },
+    ];
+    if (details.usage) {
+      const u = details.usage;
+      let tokens = `total ↑${fmtT(u.input)} ↓${fmtT(u.output)}`;
+      if (u.cacheWrite > 0) tokens += ` W${fmtT(u.cacheWrite)}`;
+      segs.push({ plain: tokens, color: "text" });
+      if (density === "cozy") segs.push({ plain: `$${u.cost.toFixed(4)}`, color: "muted" });
+    }
+    lines.push(renderSegLine(segs, theme, width));
+    for (const child of details.nodes.slice(1)) {
+      if (child.status === "pending") {
+        lines.push(pendingLine(child, theme, "   ", width));
+      } else {
+        lines.push("   " + renderSegLine(bNodeSegs(child, theme, density), theme, Math.max(8, width - 3)));
+      }
+    }
+  }
+  return lines;
+}
+
+// ---------------------------------------------------------------------------
+// 变体 C: 分段展开 (摘要 + recentTools 最近 3 条 + last output)
+// ---------------------------------------------------------------------------
+function cCard(details: ProtoDetails, theme: ThemeLike, width: number, density: Density, expanded: boolean): string[] {
+  const lines: string[] = [];
+  if (details.mode === "single") {
+    const node = details.nodes[0];
+    lines.push(renderSegLine(statusRowSegs(node, theme, density), theme, width));
+    lines.push(...cDetailLines(node, theme, width, "   ", expanded));
+  } else {
+    const root = details.nodes[0];
+    const b = details.batch;
+    const now = Date.now();
+    const st = statusOf(root);
+    const segs: Seg[] = [
+      { plain: `◐ parallel`, color: "accent" },
+      { plain: `${b?.done ?? 0}/${b?.total ?? 0} done`, color: "text" },
+      { plain: [st.label, elapsedStr(root, now)].filter(Boolean).join(" "), color: st.color },
+    ];
+    if (details.usage) {
+      const u = details.usage;
+      let tokens = `total ↑${fmtT(u.input)} ↓${fmtT(u.output)}`;
+      if (u.cacheWrite > 0) tokens += ` W${fmtT(u.cacheWrite)}`;
+      segs.push({ plain: tokens, color: "text" });
+      if (density === "cozy") segs.push({ plain: `$${u.cost.toFixed(4)}`, color: "muted" });
+    }
+    lines.push(renderSegLine(segs, theme, width));
+    for (const child of details.nodes.slice(1)) {
+      if (child.status === "pending") {
+        lines.push(pendingLine(child, theme, "   ", width));
+        continue;
+      }
+      lines.push("   " + renderSegLine(bNodeSegs(child, theme, density), theme, Math.max(8, width - 3)));
+      const sub = cDetailLines(child, theme, width, "     ", false);
+      for (const l of sub) lines.push(l);
+    }
+  }
+  return lines;
+}
+
+function cDetailLines(node: ProtoRunNode, theme: ThemeLike, width: number, indent: string, expanded: boolean): string[] {
+  const lines: string[] = [];
+  const rt = node.progress?.recentTools ?? [];
+  const limit = expanded ? Math.min(rt.length, 10) : Math.min(rt.length, 3);
+  const start = Math.max(0, rt.length - limit);
+  for (let i = start; i < rt.length; i++) {
+    const t = rt[i];
+    lines.push(indent + theme.fg("muted", "→ ") + theme.fg("toolOutput", truncate(`${t.tool} ${t.argsPreview}`, Math.max(8, width - dispLen(indent) - 2))));
+  }
+  const out = node.progress?.recentOutput ?? [];
+  if (out.length > 0) {
+    lines.push(indent + theme.fg("muted", "last: ") + theme.fg("toolOutput", `"${truncate(out[out.length - 1], Math.max(8, width - dispLen(indent) - 8))}"`));
+  }
+  return lines;
+}
+
+// ---------------------------------------------------------------------------
+// M05: Widget 树形摘要 + Footer 摘要
+// ---------------------------------------------------------------------------
+function getDemoDetails(): ProtoDetails {
+  if (!demoDetails) demoDetails = createReplay("parallel", "parallel-pending").buildDetails(1, Date.now() - 4000);
+  return demoDetails;
+}
+
+function isAttention(status: string): boolean {
+  return status === "failed" || status === "timeout" || status === "budget" || status === "cancelled";
+}
+
+/** Widget 高度=1 单行汇总 (PRD §4.2 样例: Agents 2/4 · attention 1) */
+function widgetSummaryLine(details: ProtoDetails, theme: ThemeLike): string {
+  if (details.mode === "single") {
+    const n = details.nodes[0];
+    const st = statusOf(n);
+    const u = n.usage;
+    const tok = u ? ` · ↑${fmtT(u.input)} ↓${fmtT(u.output)}` : "";
+    return `${theme.fg(st.color, `${st.icon} ${n.agent}`)} · ${theme.fg(st.color, st.label)}${tok}`;
+  }
+  const b = details.batch;
+  const att = details.nodes.filter((n) => isAttention(n.status)).length;
+  const attStr = theme.fg(att > 0 ? "warning" : "muted", `attention ${att}`);
+  return `${theme.fg("text", `Agents ${b?.done ?? 0}/${b?.total ?? 0}`)} · ${attStr}`;
+}
+
+function widgetAggSingle(node: ProtoRunNode, theme: ThemeLike): Seg[] {
+  return statusRowSegs(node, theme, "cozy");
+}
+
+function widgetAggParallel(details: ProtoDetails, theme: ThemeLike): Seg[] {
+  const root = details.nodes[0];
+  const b = details.batch;
+  const now = Date.now();
+  const st = statusOf(root);
+  const segs: Seg[] = [
+    { plain: "◐ parallel", color: "accent" },
+    { plain: `${b?.done ?? 0}/${b?.total ?? 0} done`, color: "text" },
+    { plain: [st.label, elapsedStr(root, now)].filter(Boolean).join(" "), color: st.color },
+  ];
+  if (details.usage) {
+    const u = details.usage;
+    let tokens = `total ↑${fmtT(u.input)} ↓${fmtT(u.output)}`;
+    if (u.cacheWrite > 0) tokens += ` W${fmtT(u.cacheWrite)}`;
+    segs.push({ plain: tokens, color: "text", drop: 4 });
+    segs.push({ plain: `$${u.cost.toFixed(4)}`, color: "muted", drop: 0 });
+  }
+  return segs;
+}
+
+/** child 单行状态行 (widget 用, 变体 C 聚合行下的紧凑行) */
+function widgetChildSegs(node: ProtoRunNode, theme: ThemeLike): Seg[] {
+  const st = statusOf(node);
+  const now = Date.now();
+  const segs: Seg[] = [
+    { plain: `${st.icon} ${node.agent}`, color: st.color },
+    { plain: [st.label, elapsedStr(node, now)].filter(Boolean).join(" "), color: st.color },
+    { plain: `model ${node.model ?? "—"}`, color: "text", drop: 6 },
+    { plain: ctxStr(node), color: "text", drop: 5 },
+  ];
+  const us = usageSegs(node);
+  if (us) {
+    segs.push(us.tokens);
+    segs.push(us.cost);
+  }
+  return segs;
+}
+
+/** 树形摘要 (变体 C 结构: 聚合行 + child 状态行 + recent 明细行, pending 行 ◌).
+ *  高度 1=单行汇总; N=C 内容最多 N 行 (上限 MAX_WIDGET_LINES=10).
+ *  active 图标 ⠿ 在出口处替换为 spinner 当前帧 (动效预览). */
+const SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+let spinFrame = 0;
+let spinTimer: ReturnType<typeof setInterval> | null = null;
+let lastWidgetPaint = "";
+
+function buildWidgetLines(details: ProtoDetails, theme: ThemeLike): string[] {
+  const width = Math.max(40, (process.stdout.columns || 80) - 4);
+  if (widgetHeight === 1) return [widgetSummaryLine(details, theme)];
+  const cap = Math.min(widgetHeight, 10);
+  let lines: string[];
+  if (details.mode === "single") {
+    const node = details.nodes[0];
+    lines = [renderSegLine(widgetAggSingle(node, theme), theme, width)];
+    for (const l of cDetailLines(node, theme, width, "  ", false)) {
+      if (lines.length >= cap) break;
+      lines.push(l);
+    }
+  } else {
+    lines = [renderSegLine(widgetAggParallel(details, theme), theme, width)];
+    for (const child of details.nodes.slice(1)) {
+      if (lines.length >= cap) break;
+      if (child.status === "pending") { lines.push(pendingLine(child, theme, "  ", width)); continue; }
+      lines.push("  " + renderSegLine(widgetChildSegs(child, theme), theme, Math.max(8, width - 2)));
+      for (const l of cDetailLines(child, theme, width, "    ", false).slice(0, 1)) {
+        if (lines.length >= cap) break;
+        lines.push(l);
+      }
+    }
+  }
+  const frame = SPINNER_FRAMES[spinFrame % SPINNER_FRAMES.length];
+  return lines.map((l) => l.split("⠿").join(frame));
+}
+
+/** spinner 定时器: widget 开启时 90ms 重绘一次 (与数据更新解耦, 同 pi 内建 spinner 机制) */
+function ensureSpinner(): void {
+  if (widgetPlacement === "off") {
+    if (spinTimer) { clearInterval(spinTimer); spinTimer = null; }
+    return;
+  }
+  if (spinTimer) return;
+  spinTimer = setInterval(() => {
+    try {
+      if (!lastUi) return;
+      const d = latestDetails;
+      // 无真实数据或无 active 节点 → 停表 (新数据到时 applyPanel 会重新 ensure)
+      if (!d || !d.nodes.some((n) => n.status === "active")) {
+        if (spinTimer) { clearInterval(spinTimer); spinTimer = null; }
+        return;
+      }
+      spinFrame++;
+      const lines = buildWidgetLines(d, lastUi.theme);
+      const paint = lines.join("\n");
+      if (paint === lastWidgetPaint) return; // 内容没变不重绘 (防闪烁)
+      lastWidgetPaint = paint;
+      lastUi.setWidget(WIDGET_KEY, lines, { placement: widgetPlacement });
+    } catch { /* reload 后旧 ctx 失效, 下次 applyPanel 修正 */ }
+  }, 90);
+  (spinTimer as unknown as { unref?: () => void }).unref?.();
+}
+
+/** PRD §4.2 Mini Footer Summary: Agents 2/4 · attention 1 · 40.3k tok · $0.26 · errors 2 */
+function footerLine(details: ProtoDetails | null, theme: ThemeLike): string {
+  if (!details) return theme.fg("muted", "subagent-panel · idle (无活跃 run, 运行 /subagent-proto single 演示)");
+  const b = details.batch;
+  const nodes = details.nodes;
+  const doneCount = b ? b.done : nodes[0]?.status === "done" ? 1 : 0;
+  const totalCount = b ? b.total : 1;
+  const attention = nodes.filter((n) => isAttention(n.status)).length;
+  let tok = 0, cost = 0;
+  for (const n of nodes) {
+    const u = n.usage;
+    if (u) {
+      tok += u.input + u.output + u.cacheWrite;
+      cost += u.cost;
+    }
+  }
+  const errors = nodes.filter((n) => n.isError).length;
+  const attStr = theme.fg(attention > 0 ? "warning" : "muted", `attention ${attention}`);
+  return `${theme.fg("text", `Agents ${doneCount}/${totalCount}`)} · ${attStr} · ${theme.fg("text", `${fmtT(tok)} tok`)} · ${theme.fg("muted", `$${cost.toFixed(2)}`)} · ${theme.fg("error", `errors ${errors}`)}`;
+}
+
+/** 按模块状态把 widget/footer 应用到给定 ui (命令 / session_start / 回放步刷新共用) */
+function applyPanel(ui: ExtensionUIContext, details: ProtoDetails | null): void {
+  latestDetails = details;
+  lastUi = ui;
+  if (widgetPlacement === "off") {
+    ui.setWidget(WIDGET_KEY, undefined);
+  } else {
+    const lines = buildWidgetLines(details ?? getDemoDetails(), ui.theme);
+    lastWidgetPaint = lines.join("\n");
+    ui.setWidget(WIDGET_KEY, lines, { placement: widgetPlacement });
+  }
+  if (footerEnabled) {
+    latestFooterLine = footerLine(details, ui.theme);
+    if (!footerInstalled) {
+      ui.setFooter((tui, theme) => {
+        footerTui = tui;
+        return {
+          invalidate() {},
+          render(width: number): string[] {
+            const line = latestFooterLine ?? theme.fg("muted", "subagent-panel · idle");
+            return [truncate(line, width)];
+          },
+        };
+      });
+      footerInstalled = true;
+    } else if (footerTui) {
+      footerTui.requestRender();
+    }
+  } else if (footerInstalled) {
+    ui.setFooter(undefined);
+    footerInstalled = false;
+    footerTui = null;
+  }
+  ensureSpinner();
+}
+
+/** 回放每步刷新入口 (工具/命令/overlay 内回放三路; 命令路径显式传 ctx.ui) */
+function refreshLive(details: ProtoDetails, uiOverride?: ExtensionUIContext): void {
+  latestDetails = details;
+  const ui = uiOverride ?? lastUi;
+  if (!ui) return;
+  applyPanel(ui, details);
+  // M06: viewer 实时数据 (Events-Raw/Logs 缓冲追加 + 重绘, followLive 在 render 内生效)
+  appendViewerStep(details);
+  if (viewerOpen && viewerTui) {
+    try { viewerTui.requestRender(); } catch { /* 热载后旧 tui 失效 */ }
+  }
+}
+
+/** M06: 每步向 viewer 缓冲追加假 session 事件/操作日志 (按 runId 重置) */
+function appendViewerStep(details: ProtoDetails): void {
+  const runId = details.nodes[0]?.id ?? "";
+  if (viewerRunKey !== runId) {
+    viewerRunKey = runId;
+    viewerEventBuf = [];
+    viewerLogBuf = [];
+    viewerStep = 0;
+  }
+  const node = details.nodes[0];
+  const ts = Date.now();
+  const ev: string[] = [];
+  ev.push(JSON.stringify({ type: "message_start", step: viewerStep, node: node.id, agent: node.agent, ts }));
+  for (const n of details.nodes.slice(0, 4)) {
+    for (const t of n.progress?.recentTools ?? []) {
+      ev.push(JSON.stringify({ type: "tool_use", step: viewerStep, node: n.id, tool: t.tool, args: t.argsPreview }));
+      ev.push(JSON.stringify({ type: "tool_result", step: viewerStep, node: n.id, tool: t.tool, ok: true, endMs: t.endMs }));
+    }
+  }
+  const out = node.progress?.recentOutput;
+  if (out && out.length > 0) {
+    ev.push(JSON.stringify({ type: "message_update", step: viewerStep, node: node.id, text: out[out.length - 1] }));
+  }
+  ev.push(JSON.stringify({ type: "message_end", step: viewerStep, node: node.id, status: node.status, usage: node.usage ?? null }));
+  viewerEventBuf.push(...ev);
+
+  const lg: string[] = [];
+  const iso = new Date(ts).toISOString();
+  if (viewerStep === 0) {
+    lg.push(JSON.stringify({ ts: iso, level: "info", event: "run.id.created", runId: node.id, agent: node.agent }));
+    lg.push(JSON.stringify({ ts: iso, level: "info", event: "single.spawn.start", agent: node.agent }));
+  }
+  lg.push(JSON.stringify({ ts: iso, level: "info", event: "single.update.emit", step: viewerStep, status: node.status }));
+  if (node.usage) {
+    lg.push(JSON.stringify({ ts: iso, level: "info", event: "message_end.usage", step: viewerStep, input: node.usage.input, output: node.usage.output, cost: node.usage.cost }));
+  }
+  if (viewerStep > 0 && node.status !== "active" && !viewerLogBuf.some((l) => l.includes("single.result.final"))) {
+    lg.push(JSON.stringify({ ts: iso, level: node.isError ? "error" : "info", event: "single.result.final", status: node.status, isError: !!node.isError }));
+  }
+  viewerLogBuf.push(...lg);
+  viewerStep++;
+}
+
+/** M06: 打开 Session Viewer (fire-and-forget, 不 await — M01 §4.1 硬约束) */
+function openViewer(ui: ExtensionUIContext): void {
+  if (viewerOpen) {
+    ui.notify("Session Viewer 已打开 (Esc 关闭)", "info");
+    return;
+  }
+  viewerOpen = true;
+  lastViewerUi = ui;
+  void ui.custom<void>(
+    (tui, theme, _kb, done) => {
+      viewerTui = tui;
+      viewerDone = done;
+      return new SessionViewerComponent({
+        tui,
+        theme,
+        done,
+        getLive: () => ({
+          details: latestDetails ?? getDemoDetails(),
+          events: viewerEventBuf,
+          logs: viewerLogBuf,
+        }),
+        onClose: () => {
+          viewerOpen = false;
+          viewerHandle = null;
+          viewerTui = null;
+          viewerDone = null;
+        },
+        onToggleWidth: () => toggleViewerWidth(),
+        onReplay: (mode) => {
+          void startReplayFromViewer(mode);
+        },
+      });
+    },
+    {
+      overlay: true,
+      overlayOptions: {
+        width: viewWidth === 70 ? "70%" : "100%",
+        anchor: "center",
+        maxHeight: "100%",
+        margin: { top: 1, bottom: 1 },
+      },
+      onHandle: (h) => {
+        viewerHandle = h;
+      },
+    },
+  );
+}
+
+/** M06: overlay 内 w 键 / view-width 命令 → 切换宽度并重开 (状态模块级, 保留 tab/scroll/follow) */
+function toggleViewerWidth(): void {
+  viewWidth = viewWidth === 70 ? 100 : 70;
+  if (viewerOpen && lastViewerUi) {
+    viewerDone?.(); // 关旧 (done → hideOverlay + dispose → onClose 复位)
+    openViewer(lastViewerUi);
+  }
+}
+
+/** M06: overlay 内 r/shift+r 启动回放 (capturing 吞键盘, 命令无法在打开时输入, 故由 overlay 键触发) */
+async function startReplayFromViewer(mode: "single" | "parallel"): Promise<void> {
+  const startedAtMs = Date.now();
+  const ui = lastViewerUi ?? lastUi;
+  await runReplaySteps(mode, "success", "viewer", startedAtMs, undefined, undefined, (d) => refreshLive(d, ui ?? undefined));
+}
+
+// ---------------------------------------------------------------------------
+// 渲染入口
+// ---------------------------------------------------------------------------
+interface ThemeLike {
+  fg(color: string, text: string): string;
+  bold(text: string): string;
+}
+
+class RunCardComponent implements Component {
+  private build: (width: number) => string[];
+  constructor(build: (width: number) => string[]) {
+    this.build = build;
+  }
+  invalidate(): void {}
+  render(width: number): string[] {
+    const w = width > 0 ? width : (process.stdout.columns || 80);
+    // active 图标动效: 渲染时按当前时间取 spinner 帧 (重绘由 cardAnimTimer 驱动)
+    const frame = SPINNER_FRAMES[Math.floor(Date.now() / 90) % SPINNER_FRAMES.length];
+    return this.build(w).map((l) => l.split("⠿").join(frame));
+  }
+}
+
+/** inline 卡动效: 注册最新活跃卡的 invalidate (新渲染上下文到来即替换), 90ms 驱动重绘; 终态即撤 */
+const cardInvalidators = new Set<() => void>();
+let cardAnimTimer: ReturnType<typeof setInterval> | null = null;
+
+function registerCardInvalidate(inv: () => void): void {
+  cardInvalidators.clear(); // 同一张卡的历次 render 上下文只留最新
+  cardInvalidators.add(inv);
+  ensureCardAnimation();
+}
+
+function ensureCardAnimation(): void {
+  if (cardAnimTimer || cardInvalidators.size === 0) return;
+  cardAnimTimer = setInterval(() => {
+    if (cardInvalidators.size === 0) {
+      if (cardAnimTimer) { clearInterval(cardAnimTimer); cardAnimTimer = null; }
+      return;
+    }
+    for (const inv of [...cardInvalidators]) {
+      try { inv(); } catch { cardInvalidators.delete(inv); }
+    }
+  }, 90);
+  (cardAnimTimer as unknown as { unref?: () => void }).unref?.();
+}
+
+function isSettledDetails(details: ProtoDetails): boolean {
+  return details.nodes.every((n) => n.status !== "active" && n.status !== "pending");
+}
+
+function renderCard(details: ProtoDetails, theme: ThemeLike, width: number, expanded: boolean): string[] {
+  const v = currentVariant;
+  const d = currentDensity;
+  if (v === "b") return bCard(details, theme, width, d);
+  if (v === "c") return cCard(details, theme, width, d, expanded);
+  return details.mode === "parallel" ? aParallelCard(details, theme, width, d) : aSingleCard(details, theme, width, d);
+}
+
+function callCard(args: { mode: string; scenario?: string }, theme: ThemeLike, width: number): string[] {
+  const mode = args.mode === "parallel" ? "parallel" : "single";
+  const scenario = args.scenario || "success";
+  const header = theme.fg("toolTitle", theme.bold("subagent_proto ")) + theme.fg("muted", `[proto] mode=${mode} scenario=${scenario}`);
+  const state =
+    mode === "single"
+      ? theme.fg("accent", "⠿ explorer · active · running")
+      : theme.fg("accent", "◐ parallel · batch · running");
+  return [truncate(header, width), truncate(state, width)];
+}
+
+// ---------------------------------------------------------------------------
+// 工具参数与执行
+// ---------------------------------------------------------------------------
+const PARAMS = Type.Object({
+  mode: Type.Union([Type.Literal("single"), Type.Literal("parallel")], { description: "回放模式" }),
+  scenario: Type.Optional(Type.String({ description: "场景: success/failed/timeout/storm/parallel-pending" })),
+});
+
+async function runReplaySteps(
+  mode: "single" | "parallel",
+  scenario: string,
+  source: string,
+  startedAtMs: number,
+  signal: AbortSignal | undefined,
+  onUpdate: AgentToolUpdateCallback<ProtoDetails> | undefined,
+  onStep?: (details: ProtoDetails, stepIndex: number) => void,
+): Promise<ProtoDetails> {
+  const replay = createReplay(mode, scenario);
+  const base = Date.now();
+  let current = replay.buildDetails(0, startedAtMs);
+  for (let i = 0; i < replay.steps.length; i++) {
+    const step = replay.steps[i];
+    const wait = base + step.atMs - Date.now();
+    if (wait > 0) await sleep(wait);
+    if (signal?.aborted) {
+      logEvent({ event: "replay.aborted", source, mode, scenario, stepIndex: i, ts: Date.now() });
+      break;
+    }
+    current = replay.buildDetails(i, startedAtMs);
+    logEvent({
+      event: "replay.step",
+      source,
+      mode,
+      scenario,
+      stepIndex: i,
+      kind: step.kind,
+      atMs: step.atMs,
+      ts: Date.now(),
+      text: step.text,
+      statuses: current.nodes.map((n) => n.status),
+    });
+    if (onStep) onStep(current, i);
+    if (source === "tool" && onUpdate) {
+      onUpdate({ content: [{ type: "text", text: step.text }], details: current });
+    }
+  }
+  return current;
+}
+
+// ---------------------------------------------------------------------------
+// 扩展入口
+// ---------------------------------------------------------------------------
+export default function subagentPanelProto(pi: ExtensionAPI): void {
+  pi.registerTool({
+    name: "subagent_proto",    label: "subagent_proto (fake replay)",
+    description: "subagent-panel 原型假工具: 按真实触发点分布回放 single/parallel 子代理运行, 走 onUpdate 管线. 参数 mode=single|parallel, 可选 scenario=success|failed|timeout|storm|parallel-pending.",
+    promptSnippet: "subagent_proto 假工具: 回放子代理运行时序, 用于 UI 原型验证",
+    parameters: PARAMS,
+    async execute(toolCallId: string, params, signal, onUpdate) {
+      const mode: "single" | "parallel" = params.mode;
+      const scenario = params.scenario || "success";
+      const startedAtMs = Date.now();
+      const details = await runReplaySteps(mode, scenario, "tool", startedAtMs, signal, onUpdate, (d) => refreshLive(d));
+      const summary =
+        details.mode === "single"
+          ? `[proto] ${details.nodes[0].agent}:${details.nodes[0].status}`
+          : `[proto] parallel ${details.batch?.done ?? 0}/${details.batch?.total ?? 0} done`;
+      return {
+        content: [{ type: "text", text: `subagent_proto 回放完成: ${summary}` }],
+        details,
+      };
+    },
+    renderCall(args, theme, context?: { invalidate?: () => void }) {
+      if (context?.invalidate) registerCardInvalidate(context.invalidate);
+      if (!inlineCard) return new RunCardComponent(() => []); // 无卡形态: 调用帧零行
+      return new RunCardComponent((w) => callCard(args, theme, w));
+    },
+    renderResult(result, options, theme, context?: { invalidate?: () => void }) {
+      const details = result.details as ProtoDetails | undefined;
+      if (!details || !Array.isArray(details.nodes) || details.nodes.length === 0) {
+        return new Text(theme.fg("muted", "(no run data)"), 0, 0);
+      }
+      const settled = isSettledDetails(details);
+      if (!settled && context?.invalidate) registerCardInvalidate(context.invalidate);
+      if (settled) cardInvalidators.clear();
+      if (!inlineCard) {
+        // 无卡形态: 运行中零行 (面板承担), 终态留一行极简 final 锚点
+        if (!settled) return new RunCardComponent(() => []);
+        return new RunCardComponent((w) => [
+          renderSegLine(
+            details.mode === "parallel" ? widgetAggParallel(details, theme) : widgetAggSingle(details.nodes[0], theme),
+            theme, w),
+        ]);
+      }
+      return new RunCardComponent((w) => renderCard(details, theme, w, options.expanded));
+    },
+  });
+
+  // 命令路径确定性渲染帧 (M04 证据用): /subagent-proto render [variant] [mode] [scenario] [step]
+  pi.registerMessageRenderer("subagent-proto-card", (message, { expanded, outputPad }, theme) => {
+    const details = message.details as ProtoDetails | undefined;
+    if (!details || !Array.isArray(details.nodes) || details.nodes.length === 0) return undefined;
+    const box = new Box(outputPad, 1, (t) => theme.bg("customMessageBg", t));
+    if (typeof message.content === "string" && message.content.startsWith("[proto render]")) {
+      box.addChild(new Text(theme.fg("dim", message.content), 0, 0));
+    }
+    box.addChild(new RunCardComponent((w) => renderCard(details, theme, w, expanded)));
+    return box;
+  });
+
+  pi.registerCommand("subagent-proto", {
+    description: "subagent-panel proto: single|parallel|storm|parallel-pending 回放; variant a|b|c; density compact|cozy; widget above|below|off; widget-height 1|3|5; footer on|off; status",
+    getArgumentCompletions: (prefix: string) => {
+      const opts = [
+        "single", "single failed", "single timeout", "parallel", "storm", "parallel-pending",
+        "variant a", "variant b", "variant c",
+        "density compact", "density cozy", "card on", "card off",
+        "widget above", "widget below", "widget off",
+        "widget-height 1", "widget-height 3", "widget-height 5",
+        "footer on", "footer off",
+        "view", "view-width 70", "view-width 100",
+        "status",
+      ];
+      return opts.filter((o) => o.startsWith(prefix)).map((o) => ({ value: o, label: o }));
+    },
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const parts = args.trim().split(/\s+/).filter(Boolean);
+      const cmd = parts[0];
+      const rest = parts.slice(1).join(" ");
+
+      if (cmd === "render") {
+        // render [variant a|b|c] [mode single|parallel] [scenario] [step]
+        const tokens = parts.slice(1);
+        let variant = currentVariant;
+        let mode: "single" | "parallel" = "single";
+        let scenario = "success";
+        let step: number | undefined;
+        let ti = 0;
+        if (tokens[ti] === "a" || tokens[ti] === "b" || tokens[ti] === "c") {
+          variant = tokens[ti] as VariantId;
+          ti++;
+        }
+        if (tokens[ti] === "single" || tokens[ti] === "parallel") {
+          mode = tokens[ti] as "single" | "parallel";
+          ti++;
+        }
+        if (tokens[ti] !== undefined && !/^\d+$/.test(tokens[ti])) {
+          scenario = tokens[ti];
+          ti++;
+        }
+        if (tokens[ti] !== undefined && /^\d+$/.test(tokens[ti])) step = parseInt(tokens[ti], 10);
+        currentVariant = variant;
+        const replay = createReplay(mode, scenario);
+        const idx = step === undefined ? replay.steps.length - 1 : Math.min(step, replay.steps.length - 1);
+        const details = replay.buildDetails(idx, Date.now());
+        const tag = `[proto render] ${variant} ${mode}/${scenario} step=${idx}`;
+        pi.sendMessage({
+          customType: "subagent-proto-card",
+          content: tag,
+          display: true,
+          details,
+        });
+        refreshLive(details, ctx.ui);
+        ctx.ui.notify(`render ok v${variant} ${mode}/${scenario} step=${idx}`, "info");
+        return;
+      }
+
+      if (cmd === "variant") {
+        const id = (rest || "a").normalize("NFKC").trim().toLowerCase().replace(/[^a-z]/g, "") as VariantId;
+        if (id !== "a" && id !== "b" && id !== "c") {
+          ctx.ui.notify("variant 需为 a|b|c", "warning");
+          return;
+        }
+        currentVariant = id;
+        ctx.ui.notify(`Run Card variant → ${id} (${VARIANT_NAMES[id]}) · density=${currentDensity}`, "info");
+        return;
+      }
+      if (cmd === "density") {
+        const d = (rest || "cozy").normalize("NFKC").trim().toLowerCase().replace(/[^a-z]/g, "") as Density;
+        if (d !== "compact" && d !== "cozy") {
+          ctx.ui.notify("density 需为 compact|cozy", "warning");
+          return;
+        }
+        currentDensity = d;
+        ctx.ui.notify(`Run Card density → ${d} · variant=${currentVariant}`, "info");
+        return;
+      }
+      if (cmd === "card") {
+        const v = (rest || "").normalize("NFKC").trim().toLowerCase().replace(/[^a-z]/g, "");
+        if (v !== "on" && v !== "off") {
+          ctx.ui.notify("card 需为 on|off", "warning");
+          return;
+        }
+        inlineCard = v === "on";
+        ctx.ui.notify(`Inline Run Card → ${v} (off = widget 独挑, transcript 只留占位行)`, "info");
+        return;
+      }
+      if (cmd === "status") {
+        ctx.ui.notify(`variant=${currentVariant} (${VARIANT_NAMES[currentVariant]}) density=${currentDensity} card=${inlineCard ? "on" : "off"} widget=${widgetPlacement}(h${widgetHeight}) footer=${footerEnabled ? "on" : "off"} viewer=${viewerOpen ? "open" : "closed"} viewWidth=${viewWidth}% marker=${MARKER}`, "info");
+        return;
+      }
+
+      // M06: Session Viewer
+      if (cmd === "view") {
+        if (ctx.mode !== "tui") {
+          ctx.ui.notify("Session Viewer 需要 tui 模式", "warning");
+          return;
+        }
+        openViewer(ctx.ui);
+        return;
+      }
+      if (cmd === "view-width") {
+        const w = parseInt(rest.trim(), 10);
+        if (w !== 70 && w !== 100) {
+          ctx.ui.notify("view-width 需为 70|100 (百分比宽度 vs 全屏)", "warning");
+          return;
+        }
+        viewWidth = w as ViewerWidth;
+        // capturing 打开时命令不可输入, 此路径实际仅在 viewer 未开时可达; 保险起见开着也重开
+        if (viewerOpen && lastViewerUi) toggleViewerWidth();
+        ctx.ui.notify(`Session Viewer 宽度 → ${w}% (下次打开生效; 打开时按 w 即时切换)`, "info");
+        return;
+      }
+
+      // M05: Widget 面板 + Footer 摘要控制
+      if (cmd === "widget") {
+        const w = (rest || "").normalize("NFKC").trim().toLowerCase();
+        if (w !== "above" && w !== "below" && w !== "off") {
+          ctx.ui.notify("widget 需为 above|below|off", "warning");
+          return;
+        }
+        widgetPlacement = w === "off" ? "off" : w === "above" ? "aboveEditor" : "belowEditor";
+        applyPanel(ctx.ui, latestDetails);
+        ctx.ui.notify(`Widget 面板 → ${w} (height=${widgetHeight})`, "info");
+        return;
+      }
+      if (cmd === "widget-height") {
+        const h = parseInt((rest || "").trim(), 10);
+        if (h !== 1 && h !== 3 && h !== 5) {
+          ctx.ui.notify("widget-height 需为 1|3|5", "warning");
+          return;
+        }
+        widgetHeight = h;
+        if (widgetPlacement !== "off") applyPanel(ctx.ui, latestDetails);
+        ctx.ui.notify(`Widget 高度 → ${h} (1=单行汇总 3=聚合+2child 5=聚合+4child)`, "info");
+        return;
+      }
+      if (cmd === "footer") {
+        const f = (rest || "").normalize("NFKC").trim().toLowerCase();
+        if (f !== "on" && f !== "off") {
+          ctx.ui.notify("footer 需为 on|off", "warning");
+          return;
+        }
+        footerEnabled = f === "on";
+        applyPanel(ctx.ui, latestDetails);
+        ctx.ui.notify(`Footer 摘要 → ${f === "on" ? "自定义 (PRD §4.2)" : "内置 footer"}`, "info");
+        return;
+      }
+
+      // 回放命令
+      let mode: "single" | "parallel";
+      let scenario: string;
+      if (cmd === "parallel" || cmd === "parallel-pending") {
+        mode = "parallel";
+        scenario = cmd === "parallel-pending" ? "parallel-pending" : rest || "success";
+      } else if (cmd === "storm") {
+        mode = "single";
+        scenario = "storm";
+      } else if (cmd === "single") {
+        mode = "single";
+        scenario = rest || "success";
+      } else {
+        ctx.ui.notify("用法: /subagent-proto single|parallel|storm|parallel-pending | variant a|b|c | density compact|cozy | widget above|below|off | widget-height 1|3|5 | footer on|off", "warning");
+        return;
+      }
+
+      const startedAtMs = Date.now();
+      const details = await runReplaySteps(mode, scenario, "command", startedAtMs, undefined, undefined, (d) => refreshLive(d, ctx.ui));
+      const done = details.mode === "single" ? details.nodes[0].status : `${details.batch?.done ?? 0}/${details.batch?.total ?? 0} done`;
+      ctx.ui.notify(`replay done: ${mode}/${scenario} ${details.nodes.length} nodes · ${done}`, "info");
+    },
+  });
+
+  // M06: 快捷键 alt+v 打开 Session Viewer (shortcut 分发异步不阻塞, 同 M01 非阻塞约束)
+  pi.registerShortcut("alt+v", {
+    description: "打开 subagent Session Viewer (capturing overlay, Esc 关闭)",
+    handler: (ctx) => {
+      if (ctx.mode !== "tui" || !ctx.hasUI) return;
+      try {
+        openViewer(ctx.ui);
+      } catch {
+        /* 热载后旧 ctx 失效等, 忽略 */
+      }
+    },
+  });
+
+  // M05: session_start 捕获最新 ui + 按模块状态重建 (热载旧 ctx 失效坑沿用 M04 模式)
+  pi.on("session_start", (event, ctx) => {
+    if (!ctx.hasUI) return;
+    if (event.reason === "reload") {
+      logEvent({ event: "ext.session_reload", reason: event.reason, ts: Date.now() });
+    }
+    applyPanel(ctx.ui, null);
+  });
+}
