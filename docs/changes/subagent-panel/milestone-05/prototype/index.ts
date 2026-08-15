@@ -49,6 +49,8 @@ type VariantId = "a" | "b" | "c";
 type Density = "compact" | "cozy";
 let currentVariant: VariantId = "a";
 let currentDensity: Density = "cozy";
+/** inline Run Card 开关 (形态 A 存废预览: off = widget 独挑, transcript 只留一行占位) */
+let inlineCard = true;
 
 const VARIANT_NAMES: Record<VariantId, string> = {
   a: "PRD 双行卡",
@@ -512,6 +514,7 @@ function widgetChildSegs(node: ProtoRunNode, theme: ThemeLike): Seg[] {
 const SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 let spinFrame = 0;
 let spinTimer: ReturnType<typeof setInterval> | null = null;
+let lastWidgetPaint = "";
 
 function buildWidgetLines(details: ProtoDetails, theme: ThemeLike): string[] {
   const width = Math.max(40, (process.stdout.columns || 80) - 4);
@@ -550,9 +553,18 @@ function ensureSpinner(): void {
   if (spinTimer) return;
   spinTimer = setInterval(() => {
     try {
-      spinFrame++;
       if (!lastUi) return;
-      const lines = buildWidgetLines(latestDetails ?? getDemoDetails(), lastUi.theme);
+      const d = latestDetails;
+      // 无真实数据或无 active 节点 → 停表 (新数据到时 applyPanel 会重新 ensure)
+      if (!d || !d.nodes.some((n) => n.status === "active")) {
+        if (spinTimer) { clearInterval(spinTimer); spinTimer = null; }
+        return;
+      }
+      spinFrame++;
+      const lines = buildWidgetLines(d, lastUi.theme);
+      const paint = lines.join("\n");
+      if (paint === lastWidgetPaint) return; // 内容没变不重绘 (防闪烁)
+      lastWidgetPaint = paint;
       lastUi.setWidget(WIDGET_KEY, lines, { placement: widgetPlacement });
     } catch { /* reload 后旧 ctx 失效, 下次 applyPanel 修正 */ }
   }, 90);
@@ -588,6 +600,7 @@ function applyPanel(ui: ExtensionUIContext, details: ProtoDetails | null): void 
     ui.setWidget(WIDGET_KEY, undefined);
   } else {
     const lines = buildWidgetLines(details ?? getDemoDetails(), ui.theme);
+    lastWidgetPaint = lines.join("\n");
     ui.setWidget(WIDGET_KEY, lines, { placement: widgetPlacement });
   }
   if (footerEnabled) {
@@ -735,12 +748,17 @@ export default function subagentPanelProto(pi: ExtensionAPI): void {
       };
     },
     renderCall(args, theme) {
+      if (!inlineCard) return new Text(theme.fg("muted", `subagent_proto (${args.mode ?? "single"}) · 状态见上方面板`), 0, 0);
       return new RunCardComponent((w) => callCard(args, theme, w));
     },
     renderResult(result, options, theme) {
       const details = result.details as ProtoDetails | undefined;
       if (!details || !Array.isArray(details.nodes) || details.nodes.length === 0) {
         return new Text(theme.fg("muted", "(no run data)"), 0, 0);
+      }
+      if (!inlineCard) {
+        const st = details.nodes[0]?.status ?? "active";
+        return new Text(theme.fg("muted", `subagent_proto · ${st} · 状态见上方面板`), 0, 0);
       }
       return new RunCardComponent((w) => renderCard(details, theme, w, options.expanded));
     },
@@ -764,7 +782,7 @@ export default function subagentPanelProto(pi: ExtensionAPI): void {
       const opts = [
         "single", "single failed", "single timeout", "parallel", "storm", "parallel-pending",
         "variant a", "variant b", "variant c",
-        "density compact", "density cozy",
+        "density compact", "density cozy", "card on", "card off",
         "widget above", "widget below", "widget off",
         "widget-height 1", "widget-height 3", "widget-height 5",
         "footer on", "footer off",
@@ -834,8 +852,18 @@ export default function subagentPanelProto(pi: ExtensionAPI): void {
         ctx.ui.notify(`Run Card density → ${d} · variant=${currentVariant}`, "info");
         return;
       }
+      if (cmd === "card") {
+        const v = (rest || "").normalize("NFKC").trim().toLowerCase().replace(/[^a-z]/g, "");
+        if (v !== "on" && v !== "off") {
+          ctx.ui.notify("card 需为 on|off", "warning");
+          return;
+        }
+        inlineCard = v === "on";
+        ctx.ui.notify(`Inline Run Card → ${v} (off = widget 独挑, transcript 只留占位行)`, "info");
+        return;
+      }
       if (cmd === "status") {
-        ctx.ui.notify(`variant=${currentVariant} (${VARIANT_NAMES[currentVariant]}) density=${currentDensity} widget=${widgetPlacement}(h${widgetHeight}) footer=${footerEnabled ? "on" : "off"} marker=${MARKER}`, "info");
+        ctx.ui.notify(`variant=${currentVariant} (${VARIANT_NAMES[currentVariant]}) density=${currentDensity} card=${inlineCard ? "on" : "off"} widget=${widgetPlacement}(h${widgetHeight}) footer=${footerEnabled ? "on" : "off"} marker=${MARKER}`, "info");
         return;
       }
 
