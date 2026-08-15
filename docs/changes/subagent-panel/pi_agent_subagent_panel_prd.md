@@ -1,6 +1,6 @@
 # pi agent — Subagent Observability 产品规格（唯一版）
 
-版本：v1.2-observability  
+版本：v1.3-observability（2026-08-15 M02 契约修订：ctx 子代理口径 / final details 补字段 / taskPreview 规则 / endedAtMs 记录 / L16 阈值预警 + L13/L14 定界 / R5 节点键 / pending 状态 / resume startedAtMs 口径）  
 基线仓库：`BoloBoloMe/slim-subagent`  
 基线 commit：`492d9f35fa7319da50028dbc5bb9088ee8e4e6bb`（2026-08-13）  
 中心主题：**提高子代理调度的可观测性**。所有功能都围绕一个目标：让每次委派“看得见状态、追得回现场、查得到错误、给得出修复建议”。  
@@ -17,7 +17,7 @@
 只有 slim-subagent 实际产生的运行：single、parallel batch root → `tasks[index]` children、single resume。树深度硬限制为 2；子进程以 `--no-skills --no-extensions` 启动，不递归 spawn，因此不做无限树。
 
 ### 1.3 四类观测信号
-1. **Run status**：active/done/failed/timeout/budget/cancelled 的显示状态。
+1. **Run status**：pending/active/done/failed/timeout/budget/cancelled 的显示状态。
 2. **Run details**：`onUpdate/final details` 中的 usage、model、stopReason、diagnostics。
 3. **Session transcript**：`run.json + session.jsonl` 的对话/工具/原始事件证据。
 4. **Operational logs**：父进程在关键路径写出的结构化日志，尤其失败/崩溃/错误点。
@@ -39,11 +39,11 @@
 2. 执行模式：single=`agent+task`；parallel=`tasks[]` 硬上限 8、硬并发 4，全部跑完汇总、不 fail-fast；resume 仅支持 single，parallel 批次不支持恢复。
 3. 层级只有两级：single run，或 parallel batch root → children。子进程不递归 spawn。
 4. 流式更新：single `onUpdate` 在 spawn 初始、message_end、tool_result_end、close 最终触发；parallel 只有初始 1 次 + 每个 child 完成后各 1 次聚合，不转发 per-child 流式进度。
-5. 可展示数据：`usage{input,output,cacheRead,cacheWrite,cost,turns}`、`runId/sessionDir`、`model/stopReason/errorMessage/exitCode/processSignal`、`contextTokens/contextPercent/contextWindow`、`partialOutput/hint`、`usageBudget/budgetAuto`、中止时 `sessionSaved`、resume final 的 `resumed:true`。调用侧参数可在 `renderCall`/execute 入参捕获用于展示；final details 不一定回带 `timeoutMs`。
+5. 可展示数据：`usage{input,output,cacheRead,cacheWrite,cost,turns}`、`runId/sessionDir`、`model/stopReason/errorMessage/exitCode/processSignal`、`contextTokens/contextPercent/contextWindow`、`partialOutput/hint`、`usageBudget/budgetAuto`、中止时 `sessionSaved`、resume final 的 `resumed:true`。调用侧参数可在 `renderCall`/execute 入参捕获用于展示；final details 不一定回带 `timeoutMs`。改造点 (v1.3)：final details 缺 `mode/agent/taskPreview/timeoutMsExplicit/startedAtMs/endedAtMs`，且 `contextPercent` 现为父会话口径（语义错位）— 目标契约见 §3/§8，补丁集中于 `assembleSingleResult` 单点。
 6. 状态语义：`timeout` 与 `usage_budget` 是显式 stopReason；用户取消走通用 signal 错误路径，无独立 cancelled；无 queued/starting/blocked/waiting_input 一等状态。
 7. 落盘：single=`~/.pi/agent/slim-subagent/sessions/<runId>/run.json + run-0/session.jsonl`；parallel root=`run.json(mode:"parallel")`，child=`run-<idx>/session.jsonl`。sessions 已按 7 天龄期在 `session_start` GC。
 8. 现有 TUI：`renderCall/renderResult` 已支持调用摘要、结果折叠、Ctrl+O 展开、usage 统计。
-9. 必填展示字段可得性：model 多数可得；timeoutMs 与 usageBudget 只有“显式设置”才在 Panel 展示，自动 70% 预算不进 Panel 行，只进 Diagnostics/logs；context window 占用百分比优先 `contextPercent`，其次 `contextTokens/contextWindow` 推导，不可得显示 `—`，不伪造。
+9. 必填展示字段可得性：model 多数可得；timeoutMs 与 usageBudget 只有“显式设置”才在 Panel 展示，自动 70% 预算不进 Panel 行，只进 Diagnostics/logs；context window 占用百分比为子代理口径 (v1.3 修订)：`contextTokens / resolveModelWindow(子模型)` 推导，窗口来源优先运行时 `details.model`、退化调用侧 effective model，皆不可得显示 `—`，不伪造；父会话占用不进 details；resume hint 的阈值比较同用子口径。
 10. 日志是父进程观测：能可靠记录 slim-subagent 扩展自身路径、spawn/close/stdout/stderr 事件；不能保证记录子进程内部未暴露的思考或工具细节，除非它们出现在 session/messages/stdout/stderr。
 
 ---
@@ -54,6 +54,7 @@
 type SlimUsage = { input:number; output:number; cacheRead:number; cacheWrite:number; cost:number; turns:number };
 
 type DisplayStatus =
+  | "pending"                   // 仅 parallel child：批次开始预建行，未进 worker
   | "active" | "done" | "failed" | "timeout" | "budget" | "cancelled" | "attention";
 
 type RunNode = {
@@ -61,17 +62,18 @@ type RunNode = {
   kind: "single" | "parallel-root" | "parallel-child" | "resume";
   parentId?: string;
   agent: string;
-  taskPreview: string;           // 截断；不展示完整敏感 task
+  taskPreview: string;           // ≤120 字符，单行化（换行折叠为空格），过 secret redaction；不展示完整敏感 task
   status: DisplayStatus;
   isError?: boolean;
   startedAtMs?: number;
   endedAtMs?: number;
+  endedAtMsSource?: "details" | "run.json" | "mtime-approx"; // 缺失时用 session.jsonl mtime 近似并标注
   usage?: SlimUsage;
   model?: string;                 // 优先 final details.model / run.json；active 早期可用调用侧 effective model；未知 `—`
   modelSource?: "details" | "run.json" | "call-params" | "message" | "unknown";
   timeoutMsExplicit?: number;     // 仅显式设置才填；Panel 不显示默认 15min
   usageBudgetExplicit?: number;   // 仅显式设置才填；自动 70% 不进 Panel 行
-  contextPercent?: number | null; // 优先 details.contextPercent；否则 contextTokens/contextWindow 推导；未知 `—`
+  contextPercent?: number | null; // 子代理口径：contextTokens/resolveModelWindow(子模型)；窗口优先运行时 details.model，退化调用侧 effective model；未知 `—`
   stopReason?: string;
   errorMessage?: string;          // 脱敏/截断
   runId?: string;
@@ -90,13 +92,13 @@ type RunNode = {
 ```
 
 投影来源优先级：
-1. active/final 当前工具调用：`onUpdate/final result.details`。
+1. active/final 当前工具调用：`onUpdate/final result.details`。v1.3 起 final details 携带 `mode/agent/taskPreview/timeoutMsExplicit/startedAtMs/endedAtMs`，`contextPercent` 为子代理口径 — `assembleSingleResult` 单点补丁，single/resume/parallel-child 三路径继承。
 2. 调用侧展示快照：`renderCall`/execute 入参里的 `model/timeoutMs/usageBudget/tasks[i].*` 仅用于展示字段；冲突时 final details 胜。
 3. finished/archived：single 读 `run.json + run-0/session.jsonl`；parallel root 读批次 `run.json`，child 读 `run-<idx>/session.jsonl`。
 4. operational logs：`~/.pi/subagent_log/` 用于错误证据与诊断，不作为运行态唯一来源。
 5. raw fallback：无法识别 JSONL/log 行进 raw，不丢弃。
 
-状态映射规则不变：MUST 不使用 queued/starting/blocked/waiting_input；parallel 未完成 child 显示 active；attention=`failed+timeout+budget+cancelled`；resume 加 `resumed` 徽章。
+状态映射规则（v1.3 修订）：MUST 不使用 queued/starting/blocked/waiting_input；`pending` 仅 parallel child — 批次开始按 tasks[] 全集预建行，未进 worker（未达 L30 scheduled）的 child 显示 pending，L30 后转 active；single 无 pending；parallel 进行中 child 显示 active；attention=`failed+timeout+budget+cancelled`；resume 加 `resumed` 徽章。失败原因展示限运行层可观测信号（stopReason/errorMessage/exitCode/logs）；语义层"未达到目标"不做自动判断。
 
 ---
 
@@ -111,7 +113,7 @@ type RunNode = {
 | 使用模型 model | 必显；未知 `—`；active 早期允许调用侧 effective model，final 后纠正 | final `details.model`、single `run.json.model`、调用参数/frontmatter（仅展示） |
 | 超时设置 timeout | 仅显式设置才展示，如 `timeout 300s`；未设置不展示，不显示默认 15min | 调用参数 `timeoutMs` / `tasks[i].timeoutMs` |
 | token 消耗上限 budget | 仅显式 `usageBudget` 才展示，如 `cap 50k`；未设置不展示；自动 70% 只进 Diagnostics/logs | 调用参数 `usageBudget` / `tasks[i].usageBudget`；final `details.usageBudget+budgetAuto` 校验 |
-| 上下文窗口占用 ctx | 有数据必显 `ctx 18%`；未知 `ctx —`；不伪造 | 优先 `contextPercent`；其次 `contextTokens/contextWindow` |
+| 上下文窗口占用 ctx | 有数据必显 `ctx 18%`；未知 `ctx —`；不伪造 | 子代理口径：`contextTokens / resolveModelWindow(子模型)`；窗口优先运行时 `details.model`，退化调用侧 effective model |
 
 紧凑行字段优先级：status icon → agent → status 文案 → model → ctx% → elapsed → usage tokens → timeout(仅显式) → cap(仅显式) → cost → taskPreview/recent。窄行省略顺序：cost → cap → timeout → recent → taskPreview → usage tokens（保留 status/model/ctx/elapsed）。
 
@@ -132,6 +134,12 @@ timeout/cap 未显式设置则整段省略；model/ctx 未知显示 `—`/`ctx �
    ⠿ worker   · active        · model a/fast · ctx —   · timeout 300s                     [Open session]
    ⠿ explorer · active        · model —      · ctx —                                        [Open session]
 ```
+
+批次开始（tasks > 并发 4）时未进 worker 的 child 预建行：
+```text
+   ◌ reviewer · pending 等待并发槽 · task 审查登录模块
+```
+pending 行只显示 agent + taskPreview + `pending 等待并发槽`，无 model/ctx/elapsed/usage（均未产生，不伪造）；L30 scheduled 后转 active 行。
 
 ### 4.2 Mini Footer Summary（SHOULD）
 ```text
@@ -193,7 +201,7 @@ type SubagentLog = {
   agent?: string; model?: string; status?: DisplayStatus;
   timeoutMsExplicit?: number; usageBudgetExplicit?: number; contextPercent?: number | null;
   usage?: Partial<SlimUsage>;
-  taskHash?: string; taskPreview?: string; // 不记录完整 task
+  taskHash?: string; taskPreview?: string; // 不记录完整 task；preview 与 §3 同规则（≤120 字符/单行化/redaction）
   error?: { code?: string; message: string; stack?: string }; // message 脱敏；stack 仅 debug+
   data?: Record<string, unknown>; // 已脱敏、有界
 };
@@ -201,7 +209,7 @@ type SubagentLog = {
 
 脱敏 MUST：不记录完整 task、system prompt、session 内容、tool result 全文、secret；只记录 hash/preview/计数/路径。error.message 先过 secret redaction。
 
-### 6.3 关键日志点（32 个）
+### 6.3 关键日志点（48 个）
 | ID | level | event | 位置/触发 |
 |---|---|---|---|
 | L01 | info | tool.execute.start | execute 入口，记录 mode/params 摘要 |
@@ -210,16 +218,16 @@ type SubagentLog = {
 | L04 | error | agents.discover.failed | discoverAgents 异常（当前多为静默，新增 warn/error 视影响） |
 | L05 | info | run.id.created | makeRunId/sessionDir 计算完成 |
 | L06 | info | run.json.write.ok | single/parallel run.json 原子写成功 |
-| L07 | error | run.json.write.failed | run.json 写失败 |
+| L07 | error | run.json.write.failed | run.json 写失败；settle 补丁写失败降级 warn 复用本事件（§8）|
 | L08 | debug | pi.invocation.resolved | getPiInvocation 命中级别/命令（不记完整敏感 argv） |
 | L09 | info | single.spawn.start | runSingleAgent 即将 spawn，含 agent/model/effective budget 摘要 |
 | L10 | fatal | single.spawn.failed | spawn error/ENOENT |
 | L11 | info | single.update.emit | onUpdate 初始/关键节点采样（高频 progress 不逐条 info） |
 | L12 | warn | stdout.line.non_json | 非 JSON stdout 行进 tail 计数，超阈值升 warn |
-| L13 | error | protocol.output_limit | failProtocol 触发 |
-| L14 | debug | aggregate.projection | turn_end/agent_end 投影成功/失败 |
+| L13 | error | protocol.output_limit | failProtocol 实际调用（投影失败或不可投影后）|
+| L14 | debug | aggregate.projection | 超限行投影尝试完成（成功/失败都记，含 projectedBytes）；同一超限行正常序列 = L14(failed) → L13，以 runId+toolCallId 关联 |
 | L15 | info | message_end.usage | assistant usage 累加采样（每 N 次或 final） |
-| L16 | warn | usage_budget.crossed | used >= usageBudget 触顶前一刻 |
+| L16 | warn | usage_budget.warn_80pct | used ≥ 80% × budget 且未触顶；每 run 单发，挂 usage 累加比对点；显式/自动 budget 均预警，data 标 budgetAuto |
 | L17 | error | usage_budget.abort | budgetExceeded 成立并启动 abort sequence |
 | L18 | warn | timeout.armed | timeout 定时器设置（debug 可；显式 timeout 时 info） |
 | L19 | error | timeout.fired | timedOut 成立并启动 abort sequence |
@@ -310,7 +318,9 @@ type DiagnoseFinding = {
 ## 8. 一致性、恢复与降级
 
 MUST：
-- 节点键：`toolCallId + details.mode + runId/index`；onUpdate 增量投影同键覆盖；final 后冻结 status/usage。
+- 节点键：`toolCallId + 顶层 details.mode + (single/resume: runId; parallel child: index)`；final details 必须携带 `mode` 且与 live 一致（v1.3 改造点，防 final 帧键漂移新建节点）；parallel child 自带 `details.mode="single"` 不参与键；onUpdate 增量投影同键覆盖；final 后冻结 status/usage。
+- run.json settle 补丁写（v1.3）：settle 完成后二次原子写 run.json 补 `endedAtMs/finalStatus/usage` 摘要；写失败降级 warn（L07），不阻塞终止管线；run.json 缺字段时 archived 读用 session.jsonl mtime 近似，Viewer/Diagnostics 标注 `mtime-approx` 来源，Panel 行不加 `约`。
+- resume 的 `startedAtMs` = 本次 resume spawn 时刻（details 带 `resumed:true` 标识），elapsed 显示本次运行时长；原 run 启动时刻不可复原，不伪造。
 - live `results[0]` 是仓库 live 引用；UI/log 读取必须拷贝快照。
 - 刷新/重建会话从 toolResult details 重建最后一帧；不从磁盘 sessions/logs 反推“正在运行”。
 - logs 只能证明“父进程观测到什么”；子进程崩溃且未写 session 时，Panel 显示 failed/unknown，Session Viewer empty state，Diagnose 用 spawn/close/stderr logs 给证据。
@@ -343,9 +353,9 @@ MUST：
 
 Panel MUST：
 1. single 首个 onUpdate 显示 active 摘要；运行中可见 usage/recent 活动；final 状态映射正确。
-2. parallel 初始显示 total；child 完成 done/total 增加；失败 child 不影响保序；未完成 child 只显示 active。
+2. parallel 初始显示 total；child 完成 done/total 增加；失败 child 不影响保序；批次开始预建全部 child 行，未进 worker 的显示 pending（无 model/ctx/elapsed），进 worker 转 active。
 3. 每行必填字段：status/model 必显（model 未知 `—`）；ctx 有数据必显，未知 `ctx —`；timeout/cap 仅显式设置出现；自动 70% budget 不出现在 Panel 行。
-4. active 早期 model/ctx 可从调用侧快照或 `—` 起步，final details 到达后纠正；调用侧快照不得覆盖 final 执行结果。
+4. active 早期 model/ctx 可从调用侧快照或 `—` 起步，final details 到达后纠正；调用侧快照不得覆盖 final 执行结果；final 卡自洽 — agent/taskPreview/timeout（仅显式）均来自 final details，不依赖调用侧快照。
 
 Session Viewer MUST：
 5. `Open session` header 显示 agent/runId/status/usage/model/sessionDir/log 关联；缺失显示 `—`。
@@ -353,7 +363,7 @@ Session Viewer MUST：
 7. parallel root 可切换 child；child 完成前明确显示完整 transcript 不可用；archived 与 active 分区分离；GC/缺文件 empty state 不崩溃。
 
 Logging MUST：
-8. 正常 single/parallel/resume 至少产生 L01/L05/L09 或 L28/L38、L25/L27/L31/L39 对应路径日志；失败路径必须产生对应 error/fatal 点（如 validate L02、spawn L10、timeout L19、budget L17、protocol L13、resume L35/L37）。
+8. 正常 single/parallel/resume 至少产生 L01/L05/L09 或 L28/L38、L25/L27/L31/L39 对应路径日志；失败路径必须产生对应 error/fatal 点（如 validate L02、spawn L10、timeout L19、budget L17、protocol L13、resume L35/L37）；budget 达 80% 产生 L16 warn（每 run 至多 1 条，显式/自动 budget 均计）；超限行投影失败时先 L14 后 L13。
 9. 日志写入 `~/.pi/subagent_log/subagent-YYYYMMDD.log`，JSONL 每行可解析，含 level/event/ts/runId 或 toolCallId（可得时）；不含完整 task/prompt/session/secret。
 10. `session_start` 同一触发点执行 sessions 与 logs 7 日 GC；活跃 lease 引用跳过并记 L42；GC 异常记 L43。
 
@@ -372,7 +382,8 @@ Diagnose MUST：
 - 不把 `action:"list"` 名册面板化。
 - 不从磁盘 session/log 目录恢复“正在运行”状态。
 - 不做 parallel resume。
-- 不引入 waiting_input/blocked/queued 作为一等状态，直到运行时有明确事件。
+- 不引入 waiting_input/blocked/queued 作为一等状态，直到运行时有明确事件（parallel child 的 `pending` 除外：tasks[] 全集减 scheduled 集合可推导，见 §3）。
+- 不自动判断语义层任务是否达到目标；失败原因展示限运行层可观测信号。
 - 不保证 skill 独立分类；只展示可检测调用迹象。
 - Diagnose 不自动修复、不重启 run、不改代码；只给证据与建议。
 - 日志不是 metrics/tracing 后端；不做长期留存、不做跨机器聚合。
@@ -382,8 +393,8 @@ Diagnose MUST：
 ## 12. 实现顺序（交给后续 agent）
 
 1. 先加日志骨架：`~/.pi/subagent_log/` JSONL writer、level/redaction/taskHash、7 日 GC 挂到现有 `session_start`，覆盖 L01-L10/L25-L27/L40-L44 最小闭环。
-2. 补失败/崩溃点：timeout/budget/protocol/abort/drain/signal/empty output（L11-L26）、parallel（L28-L32）、resume（L33-L39）。
-3. 写 `projectSlimDetailsToRunNodes`：投影 details + 捕获调用侧展示字段（model override、显式 timeoutMs、显式 usageBudget、tasks[i] 覆盖），标 modelSource，关联 logCursor。
+2. 补失败/崩溃点：timeout/budget（含 L16 80% 预警）/protocol/abort/drain/signal/empty output（L11-L26）、parallel（L28-L32）、resume（L33-L39）。
+3. 写 `projectSlimDetailsToRunNodes`：投影 details + 捕获调用侧展示字段（model override、显式 timeoutMs、显式 usageBudget、tasks[i] 覆盖），标 modelSource，关联 logCursor；`assembleSingleResult` 单点补丁：final details 补 `mode/agent/taskPreview/timeoutMsExplicit/startedAtMs/endedAtMs`、ctx 改子代理口径（删除父会话 getContextUsage 透传）、run.json settle 补丁写。
 4. 增强 `renderResult`：partial live card、final 结果卡；执行第 4.0 必填字段与省略规则；错误行挂 `Diagnose`。
 5. 加 Session Viewer：Inline 工具卡内 Session tab 先行；tolerant JSONL reader；Logs tab 关联 runId/nodeId；Persistent Panel 后再做 master-detail。
 6. 加 `action:"diagnose"`：扩展 schema/action；实现 target 解析、log/session 证据收集、启发式 findings、可选 report 写入；`/agents diagnose` 若 pi 支持再映射。
