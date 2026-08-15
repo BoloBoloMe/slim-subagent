@@ -47,7 +47,7 @@ try {
 // ---------------------------------------------------------------------------
 type VariantId = "a" | "b" | "c";
 type Density = "compact" | "cozy";
-let currentVariant: VariantId = "a";
+let currentVariant: VariantId = "c";
 let currentDensity: Density = "cozy";
 /** inline Run Card 开关 (形态 A 存废预览: off = widget 独挑, transcript 只留一行占位) */
 let inlineCard = true;
@@ -652,8 +652,38 @@ class RunCardComponent implements Component {
   invalidate(): void {}
   render(width: number): string[] {
     const w = width > 0 ? width : (process.stdout.columns || 80);
-    return this.build(w);
+    // active 图标动效: 渲染时按当前时间取 spinner 帧 (重绘由 cardAnimTimer 驱动)
+    const frame = SPINNER_FRAMES[Math.floor(Date.now() / 90) % SPINNER_FRAMES.length];
+    return this.build(w).map((l) => l.split("⠿").join(frame));
   }
+}
+
+/** inline 卡动效: 注册最新活跃卡的 invalidate (新渲染上下文到来即替换), 90ms 驱动重绘; 终态即撤 */
+const cardInvalidators = new Set<() => void>();
+let cardAnimTimer: ReturnType<typeof setInterval> | null = null;
+
+function registerCardInvalidate(inv: () => void): void {
+  cardInvalidators.clear(); // 同一张卡的历次 render 上下文只留最新
+  cardInvalidators.add(inv);
+  ensureCardAnimation();
+}
+
+function ensureCardAnimation(): void {
+  if (cardAnimTimer || cardInvalidators.size === 0) return;
+  cardAnimTimer = setInterval(() => {
+    if (cardInvalidators.size === 0) {
+      if (cardAnimTimer) { clearInterval(cardAnimTimer); cardAnimTimer = null; }
+      return;
+    }
+    for (const inv of [...cardInvalidators]) {
+      try { inv(); } catch { cardInvalidators.delete(inv); }
+    }
+  }, 90);
+  (cardAnimTimer as unknown as { unref?: () => void }).unref?.();
+}
+
+function isSettledDetails(details: ProtoDetails): boolean {
+  return details.nodes.every((n) => n.status !== "active" && n.status !== "pending");
 }
 
 function renderCard(details: ProtoDetails, theme: ThemeLike, width: number, expanded: boolean): string[] {
@@ -747,18 +777,21 @@ export default function subagentPanelProto(pi: ExtensionAPI): void {
         details,
       };
     },
-    renderCall(args, theme) {
+    renderCall(args, theme, context?: { invalidate?: () => void }) {
+      if (context?.invalidate) registerCardInvalidate(context.invalidate);
       if (!inlineCard) return new RunCardComponent(() => []); // 无卡形态: 调用帧零行
       return new RunCardComponent((w) => callCard(args, theme, w));
     },
-    renderResult(result, options, theme) {
+    renderResult(result, options, theme, context?: { invalidate?: () => void }) {
       const details = result.details as ProtoDetails | undefined;
       if (!details || !Array.isArray(details.nodes) || details.nodes.length === 0) {
         return new Text(theme.fg("muted", "(no run data)"), 0, 0);
       }
+      const settled = isSettledDetails(details);
+      if (!settled && context?.invalidate) registerCardInvalidate(context.invalidate);
+      if (settled) cardInvalidators.clear();
       if (!inlineCard) {
         // 无卡形态: 运行中零行 (面板承担), 终态留一行极简 final 锚点
-        const settled = details.nodes.every((n) => n.status !== "active" && n.status !== "pending");
         if (!settled) return new RunCardComponent(() => []);
         return new RunCardComponent((w) => [
           renderSegLine(
