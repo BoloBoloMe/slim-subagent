@@ -1,5 +1,5 @@
 /**
- * subagent-panel-proto — M04 Inline Run Card + M05 Widget/Footer + M06 Session Viewer 原型
+ * subagent-panel-proto — M04 Inline Run Card + M05 Widget/Footer + M06b Session Viewer 原型
  *
  * 注册:
  *   - 假工具 `subagent_proto` {mode:"single"|"parallel", scenario?}
@@ -7,20 +7,30 @@
  *   - 命令 `/subagent-proto` (single/parallel/storm/parallel-pending 回放;
  *     variant a|b|c 变体切换; density compact|cozy 密度切换;
  *     M05: widget above|below|off 面板; widget-height 1|3|5 高度; footer on|off 摘要; status;
- *     M06: view 打开 Session Viewer (capturing overlay, fire-and-forget);
- *     view-width 70|100 切 overlay 宽度百分比 vs 全屏)
- *   - 快捷键 alt+v 打开 Session Viewer
+ *     M06: view 打开 Session Viewer (capturing overlay, fire-and-forget, toggle 语义)
+ *     M06b: view 再按一次关闭; 移除 view-width)
+ *   - 快捷键 alt+v 打开/关闭 Session Viewer
  *   - JSONL 日志 (replay.log, PI_SUBAGENT_PROTO_LOG 可覆盖), MARKER=proto-v1
  *
- * M06 (Session Viewer, PRD §5, 形态受 M01 结论约束):
+ * M06b (Session Viewer 第二版, 信息组织返工):
+ *   - tab 栏 = 子代理: 第一个 tab Conversation (批次时间线), 其余每个 tab = 所选批次的一个
+ *     子代理 (agent 名), 内容 = 该子代理会话 transcript (pi 父会话历史区风格自绘近似);
+ *     批次假数据见 batches.ts (3 批次, 1/4/3 个子代理).
+ *   - Conversation tab: 父会话发起的子代理批次从早到晚; ↑/↓ 选批次, Enter 确认 → 其余 tab
+ *     切换为该批次子代理; 默认选中最新批次.
+ *   - 键盘: Tab/Shift+Tab/←/→ 切 tab, 数字键直跳, ↑/↓ (conv=选批次/agent=滚动),
+ *     PgUp/PgDn 翻页, Enter 仅 conv 确认, Esc 关闭, alt+v 再按关闭 (toggle).
+ *     r 回放键与 w/宽度切换已删除 (始终全屏).
+ *   - followLive 保留在子代理 tab (会话进行中语义), Conversation tab 不需要.
+ *   - 数据源: batches.ts 静态时间线 (类型对齐 types.ts RunNode 思路).
+ *
+ * M06 (Session Viewer v1, PRD §5, 形态受 M01 结论约束):
+ * M06 (Session Viewer v1 参考, 已被 M06b 取代):
  *   - `/subagent-proto view`: capturing overlay 全屏自绘面板, fire-and-forget 打开 (不 await, 防冻结主循环);
  *     Esc=done(null) 关闭.
- *   - 5 tab: Conversation/Tools/Events-Raw/Logs/Diagnostics; 键盘流 Tab/Shift+Tab/←/→ 切 tab,
- *     1-5 直跳, ↑/↓ 步进, PgUp/PgDn 翻页, Home/End 首尾; pi-tui 无 ScrollView → 自维护 scroll offset (viewer.ts).
- *   - followLive: Events-Raw/Logs 回放中自动滚到底, 用户上翻解除 (footer 显 "已暂停 follow"), 回底恢复;
- *     capturing 吞键盘 → 命令无法在打开时输入, overlay 内 r/shift+r 直接启动 single/parallel 回放演示 followLive.
- *   - `/subagent-proto view-width 70|100` 切宽度 (下次打开生效); overlay 内 w 键即时切换 (重开保留状态).
- *   - 数据源: latestDetails (最近一次回放), 无数据时 demo 快照 (parallel-pending step1).
+ *   - v1 5 tab: Conversation/Tools/Events-Raw/Logs/Diagnostics; pi-tui 无 ScrollView → 自维护 scroll offset (viewer.ts).
+ *   - v1 followLive: Events-Raw/Logs 回放中自动滚到底, 用户上翻解除 (footer 显 "已暂停 follow"), 回底恢复.
+ *   - 数据源 (v1): latestDetails (最近一次回放), 无数据时 demo 快照 (parallel-pending step1).
  *
  * M05 (考察点):
  *   - Widget 面板: ctx.ui.setWidget(key, string[], {placement}) 树形摘要
@@ -44,6 +54,7 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import type { AgentToolUpdateCallback, ExtensionAPI, ExtensionCommandContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createReplay, getLogFile, logEvent, MARKER } from "./replay.ts";
+import { createTimeline } from "./batches.ts";
 import { SessionViewerComponent } from "./viewer.ts";
 import type { ProtoDetails, ProtoRunNode } from "./types.ts";
 
@@ -93,19 +104,20 @@ let demoDetails: ProtoDetails | null = null;
 // ---------------------------------------------------------------------------
 // M06 Session Viewer 模块级状态
 //   viewerOpen/capturing overlay: 键盘全归 overlay, 命令无法在打开时输入;
-//   状态 (tab/scroll/follow) 由 viewer.ts 模块级持有, 重开保留. 事件/日志缓冲按 runId 重置.
+//   状态 (tab/选批次/滚动/follow) 由 viewer.ts 模块级持有, 重开保留.
+//   toggle 语义: 打开时再执行 /subagent-proto view 或 alt+v = 关闭 (M06b).
 // ---------------------------------------------------------------------------
-type ViewerWidth = 70 | 100;
-let viewWidth: ViewerWidth = 100;
 let viewerOpen = false;
 let viewerHandle: OverlayHandle | null = null;
 let viewerTui: { requestRender(force?: boolean): void } | null = null;
 let viewerDone: (() => void) | null = null;
 let lastViewerUi: ExtensionUIContext | null = null;
-let viewerEventBuf: string[] = [];
-let viewerLogBuf: string[] = [];
-let viewerStep = 0;
-let viewerRunKey = "";
+let timelineCache: import("./types.ts").ProtoTimeline | null = null;
+
+function getTimeline(): import("./types.ts").ProtoTimeline {
+  if (!timelineCache) timelineCache = createTimeline();
+  return timelineCache;
+}
 
 // ---------------------------------------------------------------------------
 // 通用工具函数
@@ -659,66 +671,23 @@ function applyPanel(ui: ExtensionUIContext, details: ProtoDetails | null): void 
   ensureSpinner();
 }
 
-/** 回放每步刷新入口 (工具/命令/overlay 内回放三路; 命令路径显式传 ctx.ui) */
+/** 回放每步刷新入口 (工具/命令两路) */
 function refreshLive(details: ProtoDetails, uiOverride?: ExtensionUIContext): void {
   latestDetails = details;
   const ui = uiOverride ?? lastUi;
   if (!ui) return;
   applyPanel(ui, details);
-  // M06: viewer 实时数据 (Events-Raw/Logs 缓冲追加 + 重绘, followLive 在 render 内生效)
-  appendViewerStep(details);
   if (viewerOpen && viewerTui) {
     try { viewerTui.requestRender(); } catch { /* 热载后旧 tui 失效 */ }
   }
 }
 
-/** M06: 每步向 viewer 缓冲追加假 session 事件/操作日志 (按 runId 重置) */
-function appendViewerStep(details: ProtoDetails): void {
-  const runId = details.nodes[0]?.id ?? "";
-  if (viewerRunKey !== runId) {
-    viewerRunKey = runId;
-    viewerEventBuf = [];
-    viewerLogBuf = [];
-    viewerStep = 0;
-  }
-  const node = details.nodes[0];
-  const ts = Date.now();
-  const ev: string[] = [];
-  ev.push(JSON.stringify({ type: "message_start", step: viewerStep, node: node.id, agent: node.agent, ts }));
-  for (const n of details.nodes.slice(0, 4)) {
-    for (const t of n.progress?.recentTools ?? []) {
-      ev.push(JSON.stringify({ type: "tool_use", step: viewerStep, node: n.id, tool: t.tool, args: t.argsPreview }));
-      ev.push(JSON.stringify({ type: "tool_result", step: viewerStep, node: n.id, tool: t.tool, ok: true, endMs: t.endMs }));
-    }
-  }
-  const out = node.progress?.recentOutput;
-  if (out && out.length > 0) {
-    ev.push(JSON.stringify({ type: "message_update", step: viewerStep, node: node.id, text: out[out.length - 1] }));
-  }
-  ev.push(JSON.stringify({ type: "message_end", step: viewerStep, node: node.id, status: node.status, usage: node.usage ?? null }));
-  viewerEventBuf.push(...ev);
-
-  const lg: string[] = [];
-  const iso = new Date(ts).toISOString();
-  if (viewerStep === 0) {
-    lg.push(JSON.stringify({ ts: iso, level: "info", event: "run.id.created", runId: node.id, agent: node.agent }));
-    lg.push(JSON.stringify({ ts: iso, level: "info", event: "single.spawn.start", agent: node.agent }));
-  }
-  lg.push(JSON.stringify({ ts: iso, level: "info", event: "single.update.emit", step: viewerStep, status: node.status }));
-  if (node.usage) {
-    lg.push(JSON.stringify({ ts: iso, level: "info", event: "message_end.usage", step: viewerStep, input: node.usage.input, output: node.usage.output, cost: node.usage.cost }));
-  }
-  if (viewerStep > 0 && node.status !== "active" && !viewerLogBuf.some((l) => l.includes("single.result.final"))) {
-    lg.push(JSON.stringify({ ts: iso, level: node.isError ? "error" : "info", event: "single.result.final", status: node.status, isError: !!node.isError }));
-  }
-  viewerLogBuf.push(...lg);
-  viewerStep++;
-}
-
-/** M06: 打开 Session Viewer (fire-and-forget, 不 await — M01 §4.1 硬约束) */
+/** M06b: 打开/关闭 Session Viewer (toggle 语义; 打开 fire-and-forget, 不 await — M01 §4.1 硬约束) */
 function openViewer(ui: ExtensionUIContext): void {
   if (viewerOpen) {
-    ui.notify("Session Viewer 已打开 (Esc 关闭)", "info");
+    // 已打开 → 关闭 (toggle; capturing 吞键盘时命令不可达, 此路径主要覆盖 alt+v/未来非捕获场景)
+    closeViewer();
+    ui.notify("Session Viewer 已关闭", "info");
     return;
   }
   viewerOpen = true;
@@ -732,9 +701,7 @@ function openViewer(ui: ExtensionUIContext): void {
         theme,
         done,
         getLive: () => ({
-          details: latestDetails ?? getDemoDetails(),
-          events: viewerEventBuf,
-          logs: viewerLogBuf,
+          timeline: getTimeline(),
         }),
         onClose: () => {
           viewerOpen = false;
@@ -742,16 +709,12 @@ function openViewer(ui: ExtensionUIContext): void {
           viewerTui = null;
           viewerDone = null;
         },
-        onToggleWidth: () => toggleViewerWidth(),
-        onReplay: (mode) => {
-          void startReplayFromViewer(mode);
-        },
       });
     },
     {
       overlay: true,
       overlayOptions: {
-        width: viewWidth === 70 ? "70%" : "100%",
+        width: "100%",
         anchor: "center",
         maxHeight: "100%",
         margin: { top: 1, bottom: 1 },
@@ -763,20 +726,9 @@ function openViewer(ui: ExtensionUIContext): void {
   );
 }
 
-/** M06: overlay 内 w 键 / view-width 命令 → 切换宽度并重开 (状态模块级, 保留 tab/scroll/follow) */
-function toggleViewerWidth(): void {
-  viewWidth = viewWidth === 70 ? 100 : 70;
-  if (viewerOpen && lastViewerUi) {
-    viewerDone?.(); // 关旧 (done → hideOverlay + dispose → onClose 复位)
-    openViewer(lastViewerUi);
-  }
-}
-
-/** M06: overlay 内 r/shift+r 启动回放 (capturing 吞键盘, 命令无法在打开时输入, 故由 overlay 键触发) */
-async function startReplayFromViewer(mode: "single" | "parallel"): Promise<void> {
-  const startedAtMs = Date.now();
-  const ui = lastViewerUi ?? lastUi;
-  await runReplaySteps(mode, "success", "viewer", startedAtMs, undefined, undefined, (d) => refreshLive(d, ui ?? undefined));
+/** M06b: 关闭 viewer (done → hideOverlay + dispose → onClose 复位) */
+function closeViewer(): void {
+  viewerDone?.();
 }
 
 // ---------------------------------------------------------------------------
@@ -968,7 +920,7 @@ export default function subagentPanelProto(pi: ExtensionAPI): void {
         "widget above", "widget below", "widget off",
         "widget-height 1", "widget-height 3", "widget-height 5",
         "footer on", "footer off",
-        "view", "view-width 70", "view-width 100",
+        "view",
         "status",
       ];
       return opts.filter((o) => o.startsWith(prefix)).map((o) => ({ value: o, label: o }));
@@ -1046,29 +998,17 @@ export default function subagentPanelProto(pi: ExtensionAPI): void {
         return;
       }
       if (cmd === "status") {
-        ctx.ui.notify(`variant=${currentVariant} (${VARIANT_NAMES[currentVariant]}) density=${currentDensity} card=${inlineCard ? "on" : "off"} widget=${widgetPlacement}(h${widgetHeight}) footer=${footerEnabled ? "on" : "off"} viewer=${viewerOpen ? "open" : "closed"} viewWidth=${viewWidth}% marker=${MARKER}`, "info");
+        ctx.ui.notify(`variant=${currentVariant} (${VARIANT_NAMES[currentVariant]}) density=${currentDensity} card=${inlineCard ? "on" : "off"} widget=${widgetPlacement}(h${widgetHeight}) footer=${footerEnabled ? "on" : "off"} viewer=${viewerOpen ? "open" : "closed"} marker=${MARKER}`, "info");
         return;
       }
 
-      // M06: Session Viewer
+      // M06b: Session Viewer (toggle 语义)
       if (cmd === "view") {
         if (ctx.mode !== "tui") {
           ctx.ui.notify("Session Viewer 需要 tui 模式", "warning");
           return;
         }
         openViewer(ctx.ui);
-        return;
-      }
-      if (cmd === "view-width") {
-        const w = parseInt(rest.trim(), 10);
-        if (w !== 70 && w !== 100) {
-          ctx.ui.notify("view-width 需为 70|100 (百分比宽度 vs 全屏)", "warning");
-          return;
-        }
-        viewWidth = w as ViewerWidth;
-        // capturing 打开时命令不可输入, 此路径实际仅在 viewer 未开时可达; 保险起见开着也重开
-        if (viewerOpen && lastViewerUi) toggleViewerWidth();
-        ctx.ui.notify(`Session Viewer 宽度 → ${w}% (下次打开生效; 打开时按 w 即时切换)`, "info");
         return;
       }
 
@@ -1131,9 +1071,9 @@ export default function subagentPanelProto(pi: ExtensionAPI): void {
     },
   });
 
-  // M06: 快捷键 alt+v 打开 Session Viewer (shortcut 分发异步不阻塞, 同 M01 非阻塞约束)
+  // M06b: 快捷键 alt+v 打开/关闭 Session Viewer (toggle; shortcut 分发异步不阻塞, 同 M01 非阻塞约束)
   pi.registerShortcut("alt+v", {
-    description: "打开 subagent Session Viewer (capturing overlay, Esc 关闭)",
+    description: "打开/关闭 subagent Session Viewer (capturing overlay, Esc 关闭)",
     handler: (ctx) => {
       if (ctx.mode !== "tui" || !ctx.hasUI) return;
       try {

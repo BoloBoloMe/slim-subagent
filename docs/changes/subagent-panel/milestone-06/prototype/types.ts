@@ -91,3 +91,59 @@ export interface ProtoDetails {
   batch?: ProtoBatchInfo;
   usage?: SlimUsage; // 顶层聚合 usage (parallel)
 }
+
+// ---------------------------------------------------------------------------
+// M06b: 批次时间线 + 子代理会话 (Session Viewer 第二版数据契约)
+//   一个批次 (batch) = 父会话历史上一次子代理工具调用 (single 调用也算一个批次);
+//   每个批次含 1-N 个子代理会话 (transcript).
+// ---------------------------------------------------------------------------
+
+export interface ProtoSessionMessage {
+  role: "user" | "assistant";
+  text: string;
+  /** 相对批次开始 (createdAtMs) 的毫秒偏移, 显示用 */
+  tsOffsetMs?: number;
+}
+
+export interface ProtoSessionToolCall {
+  name: string;
+  argsPreview: string;
+  /** 工具输出摘要 (多行以 \n 分隔) */
+  output: string;
+  ok: boolean;
+  tsOffsetMs?: number;
+}
+
+/** 单个子代理会话: 假 transcript (user/assistant 消息 + 工具调用块) */
+export interface ProtoAgentSession {
+  id: string;
+  agent: string;
+  taskPreview: string;
+  model: string;
+  status: DisplayStatus;
+  isError?: boolean;
+  errorMessage?: string;
+  startedAtMs: number;
+  endedAtMs?: number;
+  messages: ProtoSessionMessage[];
+  tools: ProtoSessionToolCall[];
+  usage?: SlimUsage;
+}
+
+/** 批次: 父会话历史上一次子代理工具调用 */
+export interface ProtoBatch {
+  id: string;
+  mode: ProtoMode;
+  task: string;
+  createdAtMs: number;
+  agents: ProtoAgentSession[];
+  total: number;
+  done: number;
+  failed: number;
+  active: number;
+}
+
+export interface ProtoTimeline {
+  /** 从早到晚排列 */
+  batches: ProtoBatch[];
+}
