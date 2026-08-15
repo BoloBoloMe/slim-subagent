@@ -20,12 +20,14 @@
 - 状态: 当前有效
 - 约束性: 必须遵守
 - 内容: cost → CH → cap → timeout → recent → taskPreview → usage tokens; 死保 status/model/ctx/elapsed. (CH 为本轮新增, 插入 cost 之后.)
+- 理由: M04 用户评审 PRD §4.0 既定顺序后确认维持 ("阶段顺序维持"), 不重开已验证规则.
 - 预计影响: 渲染截断逻辑 (M12)
 
 ### D004 CH 缓存命中率展示段
 - 状态: 当前有效
 - 约束性: 必须遵守
 - 内容: 状态行新增 `CH 87%` 段, 公式 `cacheRead / (cacheRead + input)`, 无 cacheRead 数据不显 (不伪造); 显示位置 tokens 后; 仅 cozy; 省略顺序紧随 cost. 纯展示派生, 契约不加字段.
+- 理由: M04 用户提出的展示需求 ("我还想看到子代理的缓存命中率"), 位置与密度归属经用户默认确认.
 - 预计影响: 渲染层 (M12)
 
 ### D005 active 图标 = 动画 spinner

@@ -1,6 +1,6 @@
 # 状态: 待处理
 # 类型: task
-# 阻塞于: MILESTONE-12, MILESTONE-13, MILESTONE-14, MILESTONE-15
+# 阻塞于: MILESTONE-12, MILESTONE-13, MILESTONE-14
 
 ## 问题
 

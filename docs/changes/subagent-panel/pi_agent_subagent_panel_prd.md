@@ -333,7 +333,7 @@ MUST：
 
 安全 MUST：
 - Panel/Viewer/Logs/Diagnose 默认遮蔽 secret；task/prompt/tool args/tool result/raw JSONL/log data 都可能敏感，展开 raw 前二次确认。
-- 文件路径默认 basename，hover/展开 full path；`Open folder` 仅本地受支持环境显示。
+- 文件路径默认 basename，hover/展开 full path。
 - 遥测不采集 session 内容、tool args、raw events、log data；只记录 open/switch/tab/diagnose 计数与错误码。
 - trace 级别默认关闭；即使开启也不记录完整 prompt/task/session。
 
@@ -354,9 +354,9 @@ Panel MUST：
 4. active 早期 model/ctx 可从调用侧快照或 `—` 起步，final details 到达后纠正；调用侧快照不得覆盖 final 执行结果；final 卡自洽 — agent/taskPreview/timeout（仅显式）均来自 final details，不依赖调用侧快照。
 
 Session Viewer MUST：
-5. `Open session` header 显示 agent/runId/status/usage/model/sessionDir/log 关联；缺失显示 `—`。
-6. Conversation/Tools/Events-Raw 有什么渲染什么；无 tool/skill 记录显示 empty state；skill 只在有证据时出现。
-7. parallel root 可切换 child；child 完成前明确显示完整 transcript 不可用；archived 与 active 分区分离；GC/缺文件 empty state 不崩溃。
+5. Timeline tab 按创建时间上早下晚列出全部批次，行含时间/模式/agent 列表/状态摘要；默认选中最新批次；↑/↓ 选择，Enter 确认后其余 tab 切换为该批次子代理。
+6. 子代理 tab 渲染该子代理会话 (user/assistant/工具调用块, 视觉对齐 pi transcript)；有什么渲染什么，无记录显示 empty state；底部状态区含 ctx%/budget (区分显式与自动)/hint；active 子代理 followLive，上翻解除回底恢复。
+7. 键盘流：Tab/Shift+Tab/←/→/数字键切 tab，Esc 关闭；toggle 语义 (重复 `/agent-sessions` 或 alt+v 关闭)；始终全屏。child 完成前明确显示完整 transcript 不可用；GC/缺文件 empty state 不崩溃。
 
 Logging MUST：
 8. 正常 single/parallel/resume 至少产生 L01/L05/L09 或 L28/L38、L25/L27/L31/L39 对应路径日志；失败路径必须产生对应 error/fatal 点（如 validate L02、spawn L10、timeout L19、budget L17、protocol L13、resume L35/L37）；budget 达 80% 产生 L16 warn（每 run 至多 1 条，显式/自动 budget 均计）；超限行投影失败时先 L14 后 L13。
