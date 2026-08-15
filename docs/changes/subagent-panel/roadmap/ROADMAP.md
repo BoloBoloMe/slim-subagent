@@ -45,10 +45,11 @@
 - [MILESTONE-03](MILESTONE-03.md) — 原型骨架就绪: scratch 扩展 `~/.pi/agent/extensions/subagent-panel-proto/` + 假工具 `subagent_proto` (single 7 步/parallel 5 步回放, 时序对照 single.ts:811-904 与 index.ts:265-275), pty 实测 25/25 通过, `/reload` 热载 902ms 生效; `types.ts` 契约 M04+ 直接复用. 报告: [milestone-03-report.md](../milestone-03/milestone-03-report.md).
 - [MILESTONE-04](MILESTONE-04.md) — Run Card 原型评审收口: **变体 C 分段展开** (recentTools 逐条行 + parallel child 双行树形) 选定; 默认密度 cozy; 截断维持 PRD §4.0; 新增 CH 缓存命中率展示段 (cacheRead 派生, tokens 后 cost 前, cozy 限定, 待 M07 落 PRD); **F1 升级** → MILESTONE-17. 报告: [milestone-04-report.md](../milestone-04/milestone-04-report.md); 原型源码归档 [../milestone-04/prototype/](../milestone-04/prototype/).
 - [MILESTONE-05](MILESTONE-05.md) — Widget/Footer 原型评审收口: widget **belowEditor + 5 行**; footer **与内建共存** (setFooter factory 拿 footerData 做两行自定义, 不接受替换); MAX_WIDGET_LINES=10 / factory 不保证每步刷新等 API 事实入档. 报告: [milestone-05-report.md](../milestone-05/milestone-05-report.md).
+- [MILESTONE-06](MILESTONE-06.md) — Session Viewer 定稿 (v2): **tab = 批次子代理 + 首 tab 批次时间线** (上早下晚, Enter 换批), 子代理会话视觉对齐 pi transcript; Tab/Shift+Tab/←/→/数字键, 自绘滚动过关, 始终全屏, Esc+toggle 关闭, 不做 overlay 内回放. PRD §5 待按 v2 重写 (原内容分类 tab 归属 M07 盘). 报告: [milestone-06-report.md](../milestone-06/milestone-06-report.md).
 
 ## 前沿
 
-- [MILESTONE-06](MILESTONE-06.md) — `prototype` — D · Session Viewer 原型 (overlay 多 tab)
+- [MILESTONE-07](MILESTONE-07.md) — `deliberate` — 交互评审 + PRD 定稿 (原型轮全部完成, 已解锁)
 
 ## 未决迷雾
 
