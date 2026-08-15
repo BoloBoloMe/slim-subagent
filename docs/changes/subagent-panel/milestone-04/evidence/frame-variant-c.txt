@@ -1,0 +1,20 @@
+[proto render] c parallel/parallel-pending step=6
+ ◐ parallel · 6/6 done · done 00:05 · total ↑31k ↓9.1k W4.2k · $0.2210
+    ✓ worker · done · model a/fast · ctx 12% · ↑8.1k ↓2.0k W900 · task 重构 utils 模块
+      → edit src/utils.ts
+      last: "重构完成"
+    ✗ reviewer · failed · model b/pro · ctx 31% · ↑6.8k ↓1.7k W700 · last: grep login · task 审查登录模块
+      → grep login
+      last: "发现 2 处空指针风险"
+    ✓ explorer · done · model openai/x · ctx 18% · ↑7.4k ↓1.9k W800 · last: read src/ · task 搜索当前目录结构
+      → read src/
+      last: "找到 3 个候选入口"
+    ✓ linter · done · model openai/x · ctx 22% · ↑4.3k ↓1.1k W500 · task 运行 lint 检查
+      → bash pnpm lint
+      last: "lint 通过"
+    ✓ worker · done · model openai/x · ctx — · ↑8.1k ↓2.0k W900 · last: bash rm -rf tmp · task 清理临时文件
+      → bash rm -rf tmp
+      last: "清理完成"
+    ✓ explorer · done · model openai/x · ctx — · ↑6.8k ↓1.7k W700 · last: find test/ · task 收集测试用例
+      → find test/
+      last: "收集 12 个用例"

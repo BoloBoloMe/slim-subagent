@@ -1,0 +1,8 @@
+[proto render] c parallel/parallel-pending step=0
+ ◐ parallel · 0/6 done · active 00:00 · total ↑31k ↓9.1k W4.2k · $0.2210
+    ⠿ worker · active 00:00 · model a/fast · ctx 12% · ↑900 ↓200 W100 · task 重构 utils 模块 · timeout 60s
+    ⠿ reviewer · active 00:00 · model b/pro · ctx 31% · ↑1.1k ↓300 W100 · task 审查登录模块 · cap 80k
+    ⠿ explorer · active 00:00 · model openai/x · ctx 18% · ↑1.3k ↓400 W100 · task 搜索当前目录结构
+    ⠿ linter · active 00:00 · model openai/x · ctx 22% · ↑1.5k ↓500 W100 · $0.0018 · task 运行 lint 检查
+    ◌ worker · pending 等待并发槽 · task 清理临时文件
+    ◌ explorer · pending 等待并发槽 · task 收集测试用例

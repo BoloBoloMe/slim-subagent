@@ -1,0 +1,19 @@
+{"event": "phase.A.start", "ts": 1786785718.7371154}
+{"event": "phase.B.start", "ts": 1786785723.7490685}
+{"event": "phase.C.start", "ts": 1786785728.9614563}
+{"event": "phase.D.start", "ts": 1786785731.9703343}
+{"event": "phase.E.start", "ts": 1786785738.3921273}
+{"event": "agent.call", "attempt": 1, "mode": "single", "prompt": "\u8bf7\u7acb\u5373\u8c03\u7528 subagent_proto \u5de5\u5177, \u53c2\u6570 mode=single, \u8c03\u7528\u5b8c\u5c31\u7ed3\u675f, \u4e0d\u8981\u56de\u590d\u6587\u5b57, \u4e0d\u8981\u8c03"}
+{"event": "agent.call", "attempt": 2, "mode": "single", "prompt": "\u8bf7\u7acb\u5373\u8c03\u7528 subagent_proto \u5de5\u5177, \u53c2\u6570 mode=single, \u8c03\u7528\u5b8c\u5c31\u7ed3\u675f, \u4e0d\u8981\u56de\u590d\u6587\u5b57, \u4e0d\u8981\u8c03"}
+{"event": "agent.call", "attempt": 3, "mode": "single", "prompt": "\u8bf7\u7acb\u5373\u8c03\u7528 subagent_proto \u5de5\u5177, \u53c2\u6570 mode=single, \u8c03\u7528\u5b8c\u5c31\u7ed3\u675f, \u4e0d\u8981\u56de\u590d\u6587\u5b57, \u4e0d\u8981\u8c03"}
+{"event": "phase.E.retry", "try": 1, "new": 0}
+{"event": "agent.call", "attempt": 1, "mode": "single", "prompt": "\u8bf7\u7acb\u5373\u8c03\u7528 subagent_proto \u5de5\u5177, \u53c2\u6570 mode=single, \u8c03\u7528\u5b8c\u5c31\u7ed3\u675f, \u4e0d\u8981\u56de\u590d\u6587\u5b57, \u4e0d\u8981\u8c03"}
+{"event": "agent.call", "attempt": 2, "mode": "single", "prompt": "\u8bf7\u7acb\u5373\u8c03\u7528 subagent_proto \u5de5\u5177, \u53c2\u6570 mode=single, \u8c03\u7528\u5b8c\u5c31\u7ed3\u675f, \u4e0d\u8981\u56de\u590d\u6587\u5b57, \u4e0d\u8981\u8c03"}
+{"event": "agent.call", "attempt": 3, "mode": "single", "prompt": "\u8bf7\u7acb\u5373\u8c03\u7528 subagent_proto \u5de5\u5177, \u53c2\u6570 mode=single, \u8c03\u7528\u5b8c\u5c31\u7ed3\u675f, \u4e0d\u8981\u56de\u590d\u6587\u5b57, \u4e0d\u8981\u8c03"}
+{"event": "phase.E.retry", "try": 2, "new": 0}
+{"event": "phase.F.start", "ts": 1786786109.979399}
+{"event": "phase.F2.start", "ts": 1786786130.082478}
+{"event": "phase.G.start", "ts": 1786786136.0043874}
+{"event": "phase.H.start", "ts": 1786786140.8404303}
+{"event": "phase.H.loaded", "latencyMs": 927.3524284362793}
+{"event": "summary", "passed": 44, "total": 48}

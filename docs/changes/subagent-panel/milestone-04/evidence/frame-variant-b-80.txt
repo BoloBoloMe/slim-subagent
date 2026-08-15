@@ -1,0 +1,2 @@
+[proto render] b single/success step=6
+ ✓ explorer · done 00:03 · model openai/x · ctx 18% · ↑12k ↓3.4k W800
