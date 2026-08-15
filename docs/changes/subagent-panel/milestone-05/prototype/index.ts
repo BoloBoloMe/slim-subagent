@@ -65,7 +65,7 @@ type WidgetPlacementId = "aboveEditor" | "belowEditor";
 type WidgetHeight = 1 | 3 | 5;
 const WIDGET_KEY = "subagent-panel-proto";
 let widgetPlacement: WidgetPlacementId | "off" = "off";
-let widgetHeight: WidgetHeight = 3;
+let widgetHeight: WidgetHeight = 5;
 let footerEnabled = false;
 let latestDetails: ProtoDetails | null = null;
 let lastUi: ExtensionUIContext | null = null;
@@ -506,25 +506,57 @@ function widgetChildSegs(node: ProtoRunNode, theme: ThemeLike): Seg[] {
   return segs;
 }
 
-/** 树形摘要 (变体 C 风格: 聚合行 + child 状态行, pending 行 ◌). 高度 1|3|5 */
+/** 树形摘要 (变体 C 结构: 聚合行 + child 状态行 + recent 明细行, pending 行 ◌).
+ *  高度 1=单行汇总; N=C 内容最多 N 行 (上限 MAX_WIDGET_LINES=10).
+ *  active 图标 ⠿ 在出口处替换为 spinner 当前帧 (动效预览). */
+const SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+let spinFrame = 0;
+let spinTimer: ReturnType<typeof setInterval> | null = null;
+
 function buildWidgetLines(details: ProtoDetails, theme: ThemeLike): string[] {
   const width = Math.max(40, (process.stdout.columns || 80) - 4);
+  if (widgetHeight === 1) return [widgetSummaryLine(details, theme)];
+  const cap = Math.min(widgetHeight, 10);
+  let lines: string[];
   if (details.mode === "single") {
     const node = details.nodes[0];
-    if (widgetHeight === 1) return [widgetSummaryLine(details, theme)];
-    const lines = [renderSegLine(widgetAggSingle(node, theme), theme, width)];
-    const limit = widgetHeight === 3 ? 2 : 4;
-    for (const l of cDetailLines(node, theme, width, "  ", false).slice(0, limit)) lines.push(l);
-    return lines;
+    lines = [renderSegLine(widgetAggSingle(node, theme), theme, width)];
+    for (const l of cDetailLines(node, theme, width, "  ", false)) {
+      if (lines.length >= cap) break;
+      lines.push(l);
+    }
+  } else {
+    lines = [renderSegLine(widgetAggParallel(details, theme), theme, width)];
+    for (const child of details.nodes.slice(1)) {
+      if (lines.length >= cap) break;
+      if (child.status === "pending") { lines.push(pendingLine(child, theme, "  ", width)); continue; }
+      lines.push("  " + renderSegLine(widgetChildSegs(child, theme), theme, Math.max(8, width - 2)));
+      for (const l of cDetailLines(child, theme, width, "    ", false).slice(0, 1)) {
+        if (lines.length >= cap) break;
+        lines.push(l);
+      }
+    }
   }
-  if (widgetHeight === 1) return [widgetSummaryLine(details, theme)];
-  const lines = [renderSegLine(widgetAggParallel(details, theme), theme, width)];
-  const limit = widgetHeight === 3 ? 2 : 4;
-  for (const child of details.nodes.slice(1, 1 + limit)) {
-    if (child.status === "pending") lines.push(pendingLine(child, theme, "  ", width));
-    else lines.push("  " + renderSegLine(widgetChildSegs(child, theme), theme, Math.max(8, width - 2)));
+  const frame = SPINNER_FRAMES[spinFrame % SPINNER_FRAMES.length];
+  return lines.map((l) => l.split("⠿").join(frame));
+}
+
+/** spinner 定时器: widget 开启时 90ms 重绘一次 (与数据更新解耦, 同 pi 内建 spinner 机制) */
+function ensureSpinner(): void {
+  if (widgetPlacement === "off") {
+    if (spinTimer) { clearInterval(spinTimer); spinTimer = null; }
+    return;
   }
-  return lines;
+  if (spinTimer) return;
+  spinTimer = setInterval(() => {
+    try {
+      spinFrame++;
+      if (!lastUi) return;
+      const lines = buildWidgetLines(latestDetails ?? getDemoDetails(), lastUi.theme);
+      lastUi.setWidget(WIDGET_KEY, lines, { placement: widgetPlacement });
+    } catch { /* reload 后旧 ctx 失效, 下次 applyPanel 修正 */ }
+  }, 90);
+  (spinTimer as unknown as { unref?: () => void }).unref?.();
 }
 
 /** PRD §4.2 Mini Footer Summary: Agents 2/4 · attention 1 · 40.3k tok · $0.26 · errors 2 */
@@ -580,6 +612,7 @@ function applyPanel(ui: ExtensionUIContext, details: ProtoDetails | null): void 
     footerInstalled = false;
     footerTui = null;
   }
+  ensureSpinner();
 }
 
 /** 回放每步刷新入口 (工具/命令两路, 命令路径显式传 ctx.ui) */
