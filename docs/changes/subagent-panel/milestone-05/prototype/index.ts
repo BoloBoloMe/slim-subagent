@@ -748,7 +748,7 @@ export default function subagentPanelProto(pi: ExtensionAPI): void {
       };
     },
     renderCall(args, theme) {
-      if (!inlineCard) return new Text(theme.fg("muted", `subagent_proto (${args.mode ?? "single"}) · 状态见上方面板`), 0, 0);
+      if (!inlineCard) return new RunCardComponent(() => []); // 无卡形态: 调用帧零行
       return new RunCardComponent((w) => callCard(args, theme, w));
     },
     renderResult(result, options, theme) {
@@ -757,8 +757,14 @@ export default function subagentPanelProto(pi: ExtensionAPI): void {
         return new Text(theme.fg("muted", "(no run data)"), 0, 0);
       }
       if (!inlineCard) {
-        const st = details.nodes[0]?.status ?? "active";
-        return new Text(theme.fg("muted", `subagent_proto · ${st} · 状态见上方面板`), 0, 0);
+        // 无卡形态: 运行中零行 (面板承担), 终态留一行极简 final 锚点
+        const settled = details.nodes.every((n) => n.status !== "active" && n.status !== "pending");
+        if (!settled) return new RunCardComponent(() => []);
+        return new RunCardComponent((w) => [
+          renderSegLine(
+            details.mode === "parallel" ? widgetAggParallel(details, theme) : widgetAggSingle(details.nodes[0], theme),
+            theme, w),
+        ]);
       }
       return new RunCardComponent((w) => renderCard(details, theme, w, options.expanded));
     },
