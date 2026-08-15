@@ -1,7 +1,7 @@
 ---
 name: explorer
 description: 探查. 定位与研读信源中的资料, 返回带出处的发现, 可写研究报告
-model: deepseek/deepseek-v4-flash
+model: opencode-go/deepseek-v4-flash
 thinking: high
 ---
 

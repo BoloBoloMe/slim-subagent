@@ -1,7 +1,7 @@
 ---
 name: worker
 description: 通用执行. 全工具, 处理写/执行任务
-model: deepseek/deepseek-v4-flash
+model: opencode-go/deepseek-v4-flash
 thinking: high
 ---
 

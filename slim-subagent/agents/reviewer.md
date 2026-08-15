@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: 审查. 核验委派对象, 以证据分级报告发现, 可写审核文档与报告产物
-model: deepseek/deepseek-v4-flash
+model: opencode-go/deepseek-v4-flash
 thinking: max
 ---
 
