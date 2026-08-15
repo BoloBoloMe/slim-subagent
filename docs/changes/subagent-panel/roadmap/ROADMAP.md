@@ -40,10 +40,10 @@
 - [MILESTONE-02](MILESTONE-02.md) — 契约修订落 PRD v1.3: ctx 子代理口径 / final details 补字段 (assembleSingleResult 单点补丁) / taskPreview ≤120 规则 / 节点键顶层 mode / run.json settle 补丁写 / L16 80% 预警 + L13→L14 序列定界 / pending 契约 / resume startedAtMs 口径. 账本: [DECISIONS.md](../milestone-02/DECISIONS.md) (D001-D010); 审核 (k3) 无严重发现, 轻微项已全修.
 - [MILESTONE-03](MILESTONE-03.md) — 原型骨架就绪: scratch 扩展 `~/.pi/agent/extensions/subagent-panel-proto/` + 假工具 `subagent_proto` (single 7 步/parallel 5 步回放, 时序对照 single.ts:811-904 与 index.ts:265-275), pty 实测 25/25 通过, `/reload` 热载 902ms 生效; `types.ts` 契约 M04+ 直接复用. 报告: [milestone-03-report.md](../milestone-03/milestone-03-report.md).
 - [MILESTONE-04](MILESTONE-04.md) — Run Card 原型评审收口: **变体 C 分段展开** (recentTools 逐条行 + parallel child 双行树形) 选定; 默认密度 cozy; 截断维持 PRD §4.0; 新增 CH 缓存命中率展示段 (cacheRead 派生, tokens 后 cost 前, cozy 限定, 待 M07 落 PRD); **F1 升级** → MILESTONE-17. 报告: [milestone-04-report.md](../milestone-04/milestone-04-report.md); 原型源码归档 [../milestone-04/prototype/](../milestone-04/prototype/).
+- [MILESTONE-05](MILESTONE-05.md) — Widget/Footer 原型评审收口: widget **belowEditor + 5 行**; footer **与内建共存** (setFooter factory 拿 footerData 做两行自定义, 不接受替换); MAX_WIDGET_LINES=10 / factory 不保证每步刷新等 API 事实入档. 报告: [milestone-05-report.md](../milestone-05/milestone-05-report.md).
 
 ## 前沿
 
-- [MILESTONE-05](MILESTONE-05.md) — `prototype` — B/C · Widget 面板 + Footer 摘要原型
 - [MILESTONE-06](MILESTONE-06.md) — `prototype` — D · Session Viewer 原型 (overlay 多 tab)
 
 ## 未决迷雾
