@@ -7,8 +7,8 @@
 ## 笔记
 
 **领域与仓库**:
-- 代码仓库: `/var/mnt/DATA/Workspace/subagent/slim-subagent` (独立 git 仓库, pi 扩展, 提供 `subagent` 阻塞式委派工具). 源码: `index.ts` (工具入口/渲染), `single.ts`, `agents.ts`, `resume.ts`, `session-lease.ts`; 测试 `node --test test/**`. 基线 commit `492d9f3`.
-- PRD (草稿, M07 定稿): `docs/changes/subagent-panel/pi_agent_subagent_panel_prd.md` (v1.2-observability).
+- 代码仓库: `/var/mnt/DATA/Workspace/subagent/slim-subagent` (主仓库子目录, 无独立 .git; pi 扩展, 提供 `subagent` 阻塞式委派工具). 源码: `index.ts` (工具入口/渲染), `single.ts`, `agents.ts`, `resume.ts`, `session-lease.ts`; 测试 `node --test test/**`. 基线 commit `492d9f3`; 基线后代码已漂移 (+27/-14 行), 行号引用以 M02 账本为准 (按 HEAD `7f7640e` 标注).
+- PRD (已定稿, v1.3): `docs/changes/subagent-panel/pi_agent_subagent_panel_prd.md`. M02 决策账本: `docs/changes/subagent-panel/milestone-02/DECISIONS.md` (D001-D010, 实现权威输入).
 - pi 包: `/var/home/bolo/.volta/tools/image/packages/@earendil-works/pi-coding-agent/lib/node_modules/@earendil-works/pi-coding-agent/`; 权威 API 签名在 `dist/core/extensions/types.d.ts`, 示例在 `examples/extensions/`.
 
 **已验证的 pi API 事实** (勿重复探查):
@@ -35,11 +35,11 @@
 <!-- 每个已关闭 Milestone 一行: 链接 + 一句话摘要 -->
 
 - [MILESTONE-01](MILESTONE-01.md) — R1 排雷通过: nonCapturing overlay 与 streaming/dialog/焦点共存 26/26 实测合格, D 形态可承载; 硬约束=打开须非阻塞 + 关闭靠外部句柄/自触发. 报告: [overlay-coexistence-research.md](../milestone-01/overlay-coexistence-research.md). 迷雾 F2 条件 (R1 负面) 未触发, 消散.
+- [MILESTONE-02](MILESTONE-02.md) — 契约修订落 PRD v1.3: ctx 子代理口径 / final details 补字段 (assembleSingleResult 单点补丁) / taskPreview ≤120 规则 / 节点键顶层 mode / run.json settle 补丁写 / L16 80% 预警 + L13→L14 序列定界 / pending 契约 / resume startedAtMs 口径. 账本: [DECISIONS.md](../milestone-02/DECISIONS.md) (D001-D010); 审核 (k3) 无严重发现, 轻微项已全修.
 - [MILESTONE-03](MILESTONE-03.md) — 原型骨架就绪: scratch 扩展 `~/.pi/agent/extensions/subagent-panel-proto/` + 假工具 `subagent_proto` (single 7 步/parallel 5 步回放, 时序对照 single.ts:811-904 与 index.ts:265-275), pty 实测 25/25 通过, `/reload` 热载 902ms 生效; `types.ts` 契约 M04+ 直接复用. 报告: [milestone-03-report.md](../milestone-03/milestone-03-report.md).
 
 ## 前沿
 
-- [MILESTONE-02](MILESTONE-02.md) — `deliberate` — 数据/日志契约修订 (5 处 PRD 缺口)
 - [MILESTONE-04](MILESTONE-04.md) — `prototype` — A · Inline Run Card 原型 (renderCall/renderResult 三态)
 - [MILESTONE-05](MILESTONE-05.md) — `prototype` — B/C · Widget 面板 + Footer 摘要原型
 - [MILESTONE-06](MILESTONE-06.md) — `prototype` — D · Session Viewer 原型 (overlay 多 tab)
@@ -57,15 +57,14 @@
 ## 阻塞关系
 
 ```
-M02 ─┐
-M04 ─┤
+M04 ─┐
 M05 ─┼─→ M07 ─→ M08 ─→ M09 ─→ M10 ─→ M11 ─┬─→ M12 ─┐
 M06 ─┘                                    ├─→ M13 ─┤
                                           ├─→ M14 ─┼─→ M16 ─→ ◆ 实际交付
                                           └─→ M15 ─┘
 ```
 
-- M07 阻塞于 M02, M04, M05, M06; M08 阻塞于 M07.
+- M07 阻塞于 M04, M05, M06 (M02 已关闭); M08 阻塞于 M07.
 - M09–M11 串行; M12–M15 并行阻塞于 M11; M15 另需 M07 决策升级 (条件里程碑, 不升级则关闭记因).
 - M16 阻塞于 M12, M13, M14, M15.
 - F1 若转化, 插入 M10–M12 之间.
