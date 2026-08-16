@@ -177,12 +177,23 @@ export function sessionEntryOf(evt: unknown): TranscriptEntry {
   return entry;
 }
 
-/** 读一行转录文件 (容忍损坏行, 空行跳过); 缺文件/读失败 → [] (empty state, 不崩). */
+/** 读一行转录文件 (容忍损坏行, 空行跳过); 缺文件/读失败 → [] (empty state, 不崩). 按 size/mtime 缓存 (ISSUE-08 live 刷新). */
 export function readSessionTranscriptLines(file: string): TranscriptEntry[] {
+  let st: { size: number; mtimeMs: number };
+  try {
+    const s = fs.statSync(file);
+    st = { size: s.size, mtimeMs: s.mtimeMs };
+  } catch {
+    transcriptCache.delete(file);
+    return [];
+  }
+  const hit = transcriptCache.get(file);
+  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.entries;
   let raw: string;
   try {
     raw = fs.readFileSync(file, "utf-8");
   } catch {
+    transcriptCache.delete(file);
     return [];
   }
   const out: TranscriptEntry[] = [];
@@ -192,6 +203,7 @@ export function readSessionTranscriptLines(file: string): TranscriptEntry[] {
     const entry = sessionEntryOf(r.evt);
     if (entry.kind === "message") out.push(entry);
   }
+  transcriptCache.set(file, { size: st.size, mtimeMs: st.mtimeMs, entries: out });
   return out;
 }
 
@@ -562,6 +574,13 @@ function isAgentTab(id: string): boolean {
   return id !== TIMELINE_ID;
 }
 
+// ISSUE-08: spinner 帧 (与 card.ts 同款 90ms 轮转) + 转录缓存 (PRD §9 按 path/size/mtime 缓存, 避免周期重读盘).
+const SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+function spinnerFrameAt(now: number): string {
+  return SPINNER_FRAMES[Math.floor(now / 90) % SPINNER_FRAMES.length];
+}
+const transcriptCache = new Map<string, { size: number; mtimeMs: number; entries: TranscriptEntry[] }>();
+
 // ---- 通用工具 (显示宽度按全角=2) ----
 
 function dispLen(s: string): number {
@@ -634,7 +653,7 @@ function fmtT(n: number): string {
 function statusOf(status: DisplayStatus): { icon: string; label: string; color: string } {
   switch (status) {
     case "pending": return { icon: "◌", label: "pending", color: "muted" };
-    case "active": return { icon: "⠿", label: "active", color: "accent" };
+    case "active": return { icon: spinnerFrameAt(Date.now()), label: "active", color: "accent" };
     case "done": return { icon: "✓", label: "done", color: "success" };
     case "timeout": return { icon: "✗", label: "timeout", color: "warning" };
     case "budget": return { icon: "✗", label: "budget", color: "warning" };
@@ -671,6 +690,7 @@ export class SessionViewerComponent implements Component {
   private opts: SessionViewerOpts;
   /** 最近一次 render 的 overlay 宽度 (handleInput 用, 与 render 宽度一致) */
   private lastRenderWidth = 0;
+  private refreshTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(opts: SessionViewerOpts) {
     this.opts = opts;
@@ -685,11 +705,17 @@ export class SessionViewerComponent implements Component {
         state.convCursor = clamp(state.convCursor, 0, tl.length - 1);
       }
     }
+    // ISSUE-08: 周期刷新 — 驱动 spinner 帧轮转 + 子会话内容 live 重读 (transcriptCache 保证未变不重读盘).
+    this.refreshTimer = setInterval(() => {
+      try { this.opts.tui.requestRender(); } catch { /* tui 已失效 (热载等), 停表 */ if (this.refreshTimer) { clearInterval(this.refreshTimer); this.refreshTimer = null; } }
+    }, 90);
+    this.refreshTimer.unref?.();
   }
 
   invalidate(): void {}
 
   dispose(): void {
+    if (this.refreshTimer) { clearInterval(this.refreshTimer); this.refreshTimer = null; }
     if (this.opts.onClose) this.opts.onClose();
   }
 
@@ -1083,7 +1109,7 @@ function buildAgentTranscript(batch: ViewerBatch, agent: ViewerAgent): ContentLi
 
   // 终态注记
   if (agent.status === "active") {
-    lines.push({ plain: "⠿ running... (会话进行中, follow 滚动)", color: "accent" });
+    lines.push({ plain: `${spinnerFrameAt(Date.now())} running... (会话进行中, follow 滚动)`, color: "accent" });
   } else if (isAttention(agent.status)) {
     lines.push({ plain: `${st.icon} ${agent.status}: ${(agent.errorMessage ?? agent.taskPreview) || "(无错误信息)"}`, color: "error" });
   } else {

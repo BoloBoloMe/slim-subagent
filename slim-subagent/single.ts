@@ -1571,9 +1571,9 @@ export async function runSingleAgent(opts: {
     });
     // M02 D002: spawn 前捕获 (details.startedAtMs = 本次执行起点, 与 settle endedAtMs 配对算 elapsed).
     const startedAtMs = Date.now();
-    // ISSUE-08: live onUpdate 注入 runId (viewer store 建批; 投影 d.runId 消费).
+    // ISSUE-08: live onUpdate 注入 runId + sessionDir (viewer store 建批 + 会话 live 读盘).
     const streamOnUpdate: StreamUpdateCallback | undefined = opts.onUpdate
-      ? (partial) => opts.onUpdate!({ ...partial, details: { ...partial.details, runId } })
+      ? (partial) => opts.onUpdate!({ ...partial, details: { ...partial.details, runId, sessionDir } })
       : undefined;
     const result = await runProcess(opts.agent, opts.task, args, opts.cwd, opts.timeoutMs, opts.signal, usageBudget, opts.budgetAuto, streamOnUpdate);
 

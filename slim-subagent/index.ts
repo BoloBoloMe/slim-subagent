@@ -280,7 +280,7 @@ async function runParallelTasks(
   // + completedFlags 计数; 初始 1 次 + 每 child 完成后各 1 次. 不做 per-child 流式镜像 (最小版, 超出 :596-608 范围).
   const allResults: ParallelChildResult[] = tasks.map((t, i) => ({
     index: i, agent: typeof t.agent === "string" ? t.agent : "", task: typeof t.task === "string" ? t.task : "",
-    isError: false, text: "(running...)", details: { usage: emptyUsage(), runId: batchRunId, sessionDir: "", exitCode: -1 },
+    isError: false, text: "(running...)", details: { usage: emptyUsage(), runId: batchRunId, sessionDir: path.join(batchRoot, `run-${i}`), exitCode: -1 },
   }));
   // ISSUE-03 (F1): per-child 进度预建行 (同 allResults 预建, pending → active 转换不丢行) —
   // childIndex/agent 固定, recentTools/recentOutput 空, usage 零值, isError false.

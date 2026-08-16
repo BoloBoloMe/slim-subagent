@@ -264,7 +264,7 @@ function projectParallel(d: Record<string, unknown>, callParams: ProjectionCallP
       ...(real && rr.details.stopReason !== undefined ? { stopReason: rr.details.stopReason } : {}),
       ...(real && rr.details.errorMessage !== undefined ? { errorMessage: rr.details.errorMessage } : {}),
       ...(batchRunId ? { runId: batchRunId } : {}),
-      ...(real && rr.details.sessionDir ? { sessionDir: rr.details.sessionDir } : {}),
+      ...(rr?.details?.sessionDir ? { sessionDir: rr.details.sessionDir } : {}),
       logCursor: logCursorOf(),
       ...(pr ? { progress: toRunNodeProgress(pr) } : {}),
     };
