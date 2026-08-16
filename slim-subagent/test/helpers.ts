@@ -101,6 +101,9 @@ export function captureTool(): RegisteredTool {
     registerTool(tool: RegisteredTool) {
       captured = tool;
     },
+    // ISSUE-08: 接线层调用 registerCommand/registerShortcut, 测试无 TUI 命令面, 无操作 stub.
+    registerCommand() {},
+    registerShortcut() {},
   } as unknown as ExtensionAPI;
   extensionFactory(fakeApi);
   if (!captured) throw new Error("registerTool 未被调用");
