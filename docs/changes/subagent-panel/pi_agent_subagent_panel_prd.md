@@ -267,6 +267,8 @@ type SubagentLog = {
 
 ## 7. Diagnose 命令（新增 MUST）
 
+> **作废 (2026-08-16)**: 本节启发式 Diagnose 已被「LLM 自由诊断」整体替换, 见 `docs/changes/subagent-llm-diagnose/prd.md` (用户拍板, 拆除提交 bff20c4). 以下保留作历史记录.
+
 ### 7.1 调用面
 用户可调用：
 - 主命令：`subagent { action:"diagnose", id?: "<runId前缀|batchRunId#index|today>", since?: "24h|7d|all", levelMin?: "warn|error", limit?: number, writeReport?: boolean }`
