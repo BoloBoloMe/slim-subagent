@@ -55,10 +55,11 @@
 - [MILESTONE-12](MILESTONE-12.md) — Inline Run Card (ISSUE-05): `card.ts` (变体 C 分段展开 + spinner 90ms context.invalidate + §4.0 窄行省略顺序 + CH 段 + 密度开关 + 提示文案) + index.ts 渲染接线 (renderCall/renderResult 换血, 消费 projection.ts); commit a59f630.
 - [MILESTONE-13](MILESTONE-13.md) — Session Viewer (ISSUE-06): `viewer.ts` (capturing 全屏 overlay + Timeline 批次时间线 + 子代理 tab 视觉对齐 pi transcript + followLive + 键盘流 + tolerant JSONL reader + 20 批回补 + d 键诊断桩); index.ts 零改动, 接线归 ISSUE-08; commit 5505f9d.
 - [MILESTONE-14](MILESTONE-14.md) — Diagnose (ISSUE-07): `diagnose.ts` (`runDiagnose` 公开入口 + target 解析四形态/歧义列候选 + 启发式 findings §7.2 全类别 + 证据默认脱敏 + writeReport); schema/action 注册归 ISSUE-08; commit b095d8f.
+- [MILESTONE-16](MILESTONE-16.md) — 接线 + 验收交付: ISSUE-08 命令面接线 (/agent-sessions /agent-diagnose alt+v + schema diagnose + store 回补 + d 键); ISSUE-09 用户验收 PRD §10 十四条通过 (AC 10 跳过单测覆盖), 验收期修 11 处; 测试 138 过 0 红. 交付说明: [milestone-16/delivery.md](../milestone-16/delivery.md). **路线图抵达终点**.
 
 ## 前沿
 
-- [MILESTONE-16](MILESTONE-16.md) — `task` — 主会话接线 (ISSUE-08) + 用户验收 (ISSUE-09, HITL)
+(空 — 路线图已抵达目的地; 「LLM 自由诊断」为新立项, 见 `docs/changes/subagent-llm-diagnose/`)
 
 ## 未决迷雾
 

@@ -1,6 +1,10 @@
-# 状态: 进行中
+# 状态: 已关闭
 # 类型: task
 # 阻塞于: MILESTONE-12, MILESTONE-13, MILESTONE-14
+
+## 关闭记录 (2026-08-16)
+
+ISSUE-08 接线 + ISSUE-09 用户验收全部完成: PRD §10 十四条通过 (AC 10 按验收清单跳过, 单测覆盖); 验收期随报随修 11 处均已提交回归不破坏; 全量测试 138 过 0 红, git 干净. 交付说明: [milestone-16/delivery.md](../milestone-16/delivery.md). 验收中用户立项「LLM 自由诊断」新产品 → `docs/changes/subagent-llm-diagnose/`. 路线图清空, 抵达目的地.
 
 ## 问题
 
