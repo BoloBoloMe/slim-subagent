@@ -236,6 +236,11 @@ export function buildTimeline(records: ViewerBatch[]): ViewerBatch[] {
 // 纯函数层 3: RunNode 快照 → 批次 (live 喂入路径, D011 不从磁盘反推运行态)
 // ---------------------------------------------------------------------------
 
+/** session 文件路径 (single/resume 用 run-0 子目录, parallel-child 直接用 session.jsonl, 与 single.ts sessionPaths 同构). */
+function sessionFileOf(kind: RunNode["kind"], sessionDir: string): string {
+  return path.join(sessionDir, kind === "parallel-child" ? "session.jsonl" : "run-0/session.jsonl");
+}
+
 function liveAgentOf(node: RunNode): ViewerAgent {
   const sessionDir = node.sessionDir;
   return {
@@ -255,7 +260,7 @@ function liveAgentOf(node: RunNode): ViewerAgent {
     ...(node.diagnostics?.hint !== undefined ? { hint: node.diagnostics.hint } : {}),
     ...(node.logCursor?.lastEventId !== undefined ? { logEventIds: [node.logCursor.lastEventId] } : {}),
     ...(node.runId !== undefined ? { runId: node.runId } : {}),
-    ...(sessionDir ? { sessionDir, sessionFile: path.join(sessionDir, "run-0", "session.jsonl") } : {}),
+    ...(sessionDir ? { sessionDir, sessionFile: sessionFileOf(node.kind, sessionDir) } : {}),
     source: "live",
   };
 }
@@ -351,7 +356,8 @@ function archivedParallelBatch(json: Record<string, unknown>, runDir: string, ru
   const agents: ViewerAgent[] = tasks.map((t, i) => {
     const task = t as Record<string, unknown>;
     const childDir = path.join(runDir, `run-${i}`);
-    const sessionFile = path.join(childDir, "run-0", "session.jsonl");
+    // ISSUE-08 修复: parallel child 的 session.jsonl 直接在 run-<idx>/ 下 (skipRunJson 路径), 非 run-0 子目录.
+    const sessionFile = path.join(childDir, "session.jsonl");
     const endedAtMs = fileMtimeOrUndef(sessionFile);
     const model = typeof task.model === "string" && task.model !== "" ? task.model : "—";
     return {

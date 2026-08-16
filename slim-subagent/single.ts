@@ -117,6 +117,7 @@ export interface StreamUpdateDetails {
   mode: "single" | "parallel"; // ISSUE-07 deferred (b): parallel onUpdate 聚合流复用同 payload 形态
   results: SingleResult[];
   progress: ProgressSnapshot[];
+  runId?: string; // ISSUE-08: live 帧携带 runId (viewer store 建批 + 投影节点键)
 }
 export type StreamUpdateCallback = (partial: AgentToolResult<StreamUpdateDetails>) => void;
 
@@ -1570,7 +1571,11 @@ export async function runSingleAgent(opts: {
     });
     // M02 D002: spawn 前捕获 (details.startedAtMs = 本次执行起点, 与 settle endedAtMs 配对算 elapsed).
     const startedAtMs = Date.now();
-    const result = await runProcess(opts.agent, opts.task, args, opts.cwd, opts.timeoutMs, opts.signal, usageBudget, opts.budgetAuto, opts.onUpdate);
+    // ISSUE-08: live onUpdate 注入 runId (viewer store 建批; 投影 d.runId 消费).
+    const streamOnUpdate: StreamUpdateCallback | undefined = opts.onUpdate
+      ? (partial) => opts.onUpdate!({ ...partial, details: { ...partial.details, runId } })
+      : undefined;
+    const result = await runProcess(opts.agent, opts.task, args, opts.cwd, opts.timeoutMs, opts.signal, usageBudget, opts.budgetAuto, streamOnUpdate);
 
     // M02 D005: settle 完成后二次原子写 run.json 补 endedAtMs/finalStatus/usage;
     // per-child (skipRunJson) 跳过 — 批次 run.json 由调度器写, 补丁也归调度器.

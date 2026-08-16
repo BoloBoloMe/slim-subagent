@@ -297,7 +297,7 @@ async function runParallelTasks(
   const emitParallelUpdate = () => {
     if (!onUpdate) return;
     const done = completedFlags.filter(Boolean).length;
-    onUpdate({ content: [{ type: "text", text: `Parallel: ${done}/${tasks.length} done, ${tasks.length - done} running...` }], details: { mode: "parallel", results: [...allResults], progress: childProgress.map((p) => ({ ...p, recentTools: [...p.recentTools], recentOutput: [...p.recentOutput] })) } });
+    onUpdate({ content: [{ type: "text", text: `Parallel: ${done}/${tasks.length} done, ${tasks.length - done} running...` }], details: { mode: "parallel", runId: batchRunId, results: [...allResults], progress: childProgress.map((p) => ({ ...p, recentTools: [...p.recentTools], recentOutput: [...p.recentOutput] })) } });
   };
   emitParallelUpdate(); // 初始 1 次 (全部 running)
 

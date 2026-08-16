@@ -232,7 +232,11 @@ export async function runResume(
     logEvent({ level: "info", event: "resume.spawn.start", mode: "resume", runId: run.runId, agent: run.agent, model: run.model, timeoutMsExplicit: timeoutMs, usageBudgetExplicit: eff.budget });
     // M02 D002: spawn 前捕获 (与 resume settle 补丁 endedAtMs 配对).
     const startedAtMs = Date.now();
-    const result = await runProcess(agent, task, args, cwd, timeoutMs, signal, eff.budget, eff.auto, onUpdate);
+    // ISSUE-08: live onUpdate 注入 runId (viewer store 建批).
+    const streamOnUpdate: StreamUpdateCallback | undefined = onUpdate
+      ? (partial) => onUpdate({ ...partial, details: { ...partial.details, runId: run.runId } })
+      : undefined;
+    const result = await runProcess(agent, task, args, cwd, timeoutMs, signal, eff.budget, eff.auto, streamOnUpdate);
     // M02 D005: resume settle 补丁写 (sessionDir = 原 run 目录, 复用 single 同源写入函数).
     writeRunJsonSettle(sessionRootDir(run.runId), {
       endedAtMs: result.endedAtMs ?? Date.now(),
