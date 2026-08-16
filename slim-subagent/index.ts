@@ -17,7 +17,7 @@ import { Text } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
 import { renderRunCard } from "./card.ts";
 import { projectSlimDetailsToRunNodes } from "./projection.ts";
-import type { ProjectionInput, RunNode } from "./projection.ts";
+import type { ProjectionInput } from "./projection.ts";
 import { discoverAgents, formatAgentList } from "./agents.ts";
 import type { AgentConfig } from "./agents.ts";
 import { runSingleAgent, makeRunId, sessionRootDir, resolveEffectiveUsageBudget } from "./single.ts";
@@ -372,43 +372,8 @@ async function runParallelTasks(
 
 // ---- ISSUE-05: Inline Live Run Card (PRD §4.1 变体 C, M07 D001-D005/D008) — 渲染接线 ----
 // card.ts 承担全部渲染 (纯函数层 renderRunNodeLines/renderParallelLines + 组件层 renderRunCard/spinner).
-// 本文件只做两类因子: renderCall 用调用侧快照预建节点 (projection ProjectionCallParams 同形),
-// renderResult 把 result.details 交给 projectSlimDetailsToRunNodes (ISSUE-04 投影) → 卡组件.
-
-// renderCall 前置帧 (execution 未开始): single = agent+task+model/timeout/cap 展示字段;
-// parallel = 聚合 root + tasks[] 全量 pending 预建行 (未达 L30, D008 不伪造 model/ctx/elapsed/usage).
-function callFrameNodes(args: { agent?: unknown; task?: unknown; tasks?: unknown[]; model?: unknown; timeoutMs?: unknown; usageBudget?: unknown }): RunNode[] {
-  const tasks = Array.isArray(args.tasks) ? (args.tasks as { agent?: unknown; task?: unknown; model?: unknown; timeoutMs?: unknown; usageBudget?: unknown }[]) : [];
-  if (tasks.length > 0) {
-    const children: RunNode[] = tasks.map((t, i) => ({
-      id: `#${i}`,
-      kind: "parallel-child" as const,
-      parentId: "",
-      agent: typeof t.agent === "string" ? t.agent : "?",
-      taskPreview: taskPreviewOf(typeof t.task === "string" ? t.task : ""),
-      status: "pending" as const,
-      ...(typeof t.model === "string" && t.model !== "" ? { model: t.model, modelSource: "call-params" as const } : {}),
-      ...(typeof t.timeoutMs === "number" ? { timeoutMsExplicit: t.timeoutMs } : {}),
-      ...(typeof t.usageBudget === "number" ? { usageBudgetExplicit: t.usageBudget } : {}),
-    }));
-    return [
-      { id: "", kind: "parallel-root", agent: "parallel", taskPreview: "", status: "active", progress: { done: 0, total: tasks.length } },
-      ...children,
-    ];
-  }
-  return [
-    {
-      id: "",
-      kind: "single",
-      agent: typeof args.agent === "string" && args.agent !== "" ? args.agent : "...",
-      taskPreview: taskPreviewOf(typeof args.task === "string" ? args.task : ""),
-      status: "active",
-      ...(typeof args.model === "string" && args.model !== "" ? { model: args.model, modelSource: "call-params" as const } : {}),
-      ...(typeof args.timeoutMs === "number" ? { timeoutMsExplicit: args.timeoutMs } : {}),
-      ...(typeof args.usageBudget === "number" ? { usageBudgetExplicit: args.usageBudget } : {}),
-    },
-  ];
-}
+// renderCall 预执行帧已去掉 (用户拍板): pi 会把 renderCall 与 renderResult 叠加渲染, 静态预帧的
+// model —/ctx — 占位与实际运行卡重复且误导; 运行卡只由 renderResult (projectSlimDetailsToRunNodes) 驱动.
 
 export default function (pi: ExtensionAPI) {
   // ISSUE-06 TS-003: session_start 挂点 — 按龄 GC 扫一次 (M2-D005, pi docs/extensions.md 事件表;
@@ -524,15 +489,9 @@ export default function (pi: ExtensionAPI) {
       // 本切片: onUpdate 透传 (M3-02 考察点 6 触发点/payload 见 single.ts).
       return runSingleAgent({ agent, task, model, thinking, cwd, timeoutMs, usageBudget: eff.budget, budgetAuto: eff.auto, ctx: _ctx, signal: _signal, onUpdate });
     },
-// ---- ISSUE-05: Inline Live Run Card — renderCall 接线 (调用侧快照 → 卡组件; 执行未开始不注册 spinner, 避免闲置动画). ----
-    renderCall(args, theme, context) {
-      try {
-        return renderRunCard(callFrameNodes(args as { agent?: unknown; task?: unknown; tasks?: unknown[]; model?: unknown; timeoutMs?: unknown; usageBudget?: unknown }), { density: "cozy", animate: false }, context as { invalidate?: () => void } | undefined);
-      } catch (e) {
-        // L44 (warn): renderCall 异常 → 记日志 + 最简占位 (不影响主流程/返回).
-        logEvent({ level: "warn", event: "render.update.failed", errorMessage: (e as Error).message });
-        return new Text("subagent call", 0, 0);
-      }
+    // renderCall 预执行帧去掉 (用户拍板): 返回空组件, 运行卡只由 renderResult 驱动.
+    renderCall(_args, _theme, _context) {
+      return new Text("", 0, 0);
     },
     // ISSUE-05: renderResult 接线 — details → projectSlimDetailsToRunNodes (ISSUE-04) → 卡组件;
     // 第 4 参 context (ToolRenderContext) 传给 spinner (未 settle 时 90ms invalidate 驱动重绘, settled 即停).
