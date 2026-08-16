@@ -51,13 +51,14 @@
 - [MILESTONE-09](MILESTONE-09.md) — 日志骨架落地: `log.ts` (append-only JSONL 按日文件 + level 体系 trace..fatal/PI_SUBAGENT_LOG_LEVEL + 脱敏/taskHash + 7 日 GC runLogGc) + L01-L10/L25-L27/L40-L44 插桩 (index/single/agents/resume, 只插桩不改执行逻辑); 单测 7 绿, 全量 96 过 3 既有红 (agents.test.ts 模型漂移). 决策记录: [milestone-09/UNAUTHORIZED_DECISIONS.md](../milestone-09/UNAUTHORIZED_DECISIONS.md); commit 71850e0.
 - [MILESTONE-10](MILESTONE-10.md) — 日志全量挂载 + details 补丁: L11-L39 全量插桩 (single/index/resume), assembleSingleResult 六字段补丁 (mode/agent/taskPreview/timeoutMsExplicit/startedAtMs/endedAtMs), ctx 改子代理口径 (删 getContextUsage 父口径, contextTokens/resolveModelWindow), run.json settle 补丁写 (writeRunJsonSettle, L07 降级 warn); 测试 105 过 102 3 既有红. commit a7d98ca.
 - [MILESTONE-17](MILESTONE-17.md) — F1 parallel per-child 进度透传 (M07 D013): runParallelTasks 每 child 挂 onUpdate, per-child 快照 (recentTools/recentOutput/usage/model/isError) 汇入聚合 details.progress (ParallelChildProgress[]), `progress: []` 硬编码消除, done/total 保序与 pending 预建行不变; 测试 107 过 104 3 既有红. commit 399fcd1.
-- [MILESTONE-11](MILESTONE-11.md) — 投影层 projection.ts: `projectSlimDetailsToRunNodes` (details+调用侧快照→RunNode 全字段), 状态映射 (pending 仅 parallel-child 由 scheduled 推导/attention 聚合/resume resumed 徽章), modelSource 优先级 (details>call-params>unknown), endedAtMs 三级来源, `projectArchivedRunNode` (run.json+session.jsonl mtime 近似); 测试 116 过 113 3 既有红. commit 89f... (projection).
+- [MILESTONE-11](MILESTONE-11.md) — 投影层 projection.ts: `projectSlimDetailsToRunNodes` (details+调用侧快照→RunNode 全字段), 状态映射 (pending 仅 parallel-child 由 scheduled 推导/attention 聚合/resume resumed 徽章), modelSource 优先级 (details>call-params>unknown), endedAtMs 三级来源, `projectArchivedRunNode` (run.json+session.jsonl mtime 近似); 测试 116 过 113 3 既有红. commit df7e9d8.
+- [MILESTONE-12](MILESTONE-12.md) — Inline Run Card (ISSUE-05): `card.ts` (变体 C 分段展开 + spinner 90ms context.invalidate + §4.0 窄行省略顺序 + CH 段 + 密度开关 + 提示文案) + index.ts 渲染接线 (renderCall/renderResult 换血, 消费 projection.ts); commit a59f630.
+- [MILESTONE-13](MILESTONE-13.md) — Session Viewer (ISSUE-06): `viewer.ts` (capturing 全屏 overlay + Timeline 批次时间线 + 子代理 tab 视觉对齐 pi transcript + followLive + 键盘流 + tolerant JSONL reader + 20 批回补 + d 键诊断桩); index.ts 零改动, 接线归 ISSUE-08; commit 5505f9d.
+- [MILESTONE-14](MILESTONE-14.md) — Diagnose (ISSUE-07): `diagnose.ts` (`runDiagnose` 公开入口 + target 解析四形态/歧义列候选 + 启发式 findings §7.2 全类别 + 证据默认脱敏 + writeReport); schema/action 注册归 ISSUE-08; commit b095d8f.
 
 ## 前沿
 
-- [MILESTONE-12](MILESTONE-12.md) — `task` — Run Card 渲染 (ISSUE-05, 已解锁)
-- [MILESTONE-13](MILESTONE-13.md) — `task` — Session Viewer (ISSUE-06, 已解锁)
-- [MILESTONE-14](MILESTONE-14.md) — `task` — Diagnose (ISSUE-07, 已解锁)
+- [MILESTONE-16](MILESTONE-16.md) — `task` — 主会话接线 (ISSUE-08) + 用户验收 (ISSUE-09, HITL)
 
 ## 未决迷雾
 
@@ -79,6 +80,6 @@ M06 ─┘                                           ├─→ M13 ─┼─→ 
                                                  └─→ M14 ─┘
 ```
 
-- M07 阻塞于 M04, M05, M06 (均已关闭); M08 阻塞于 M07 (已关闭); M09, M10, M17, M11 已关闭 → M12/M13/M14 即前沿 (三者并行, 阻塞 M16).
+- M07 阻塞于 M04, M05, M06 (均已关闭); M08 阻塞于 M07 (已关闭); M09, M10, M17, M11, M12, M13, M14 已关闭 → M16 即前沿 (ISSUE-08 接线 + ISSUE-09 验收, 均非 AFK 编码 task).
 - M09–M10 串行; M17 (F1 转化) 阻塞于 M10, 阻塞 M11; M12–M14 并行阻塞于 M11; M15 已关闭记因 (B/C 不升级).
 - M16 阻塞于 M12, M13, M14.
