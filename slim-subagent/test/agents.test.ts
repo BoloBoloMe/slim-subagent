@@ -1,7 +1,7 @@
 // ISSUE-07 TS-001 切片测试: 内置 3 agents (M1-D008) — 名册可见 + spawn argv 工具面契约 + 渲染接线冒烟.
 // 接缝 (EXECUTION.md 测试策略 1/2): fake ExtensionAPI 捕获 registerTool 直调 execute;
 // fake pi 经 PI_SUBAGENT_PI_BINARY 注入 + FAKE_PI_ECHO_BUNDLE 回显 argv; 临时 HOME 隔离 user 源.
-// 覆盖: M1-D008 (explorer/worker/reviewer), 内置 agent 默认 model (frontmatter 统一 deepseek/deepseek-v4-flash),
+// 覆盖: M1-D008 (explorer/worker/reviewer), 内置 agent 默认 model (frontmatter 统一 opencode-go/deepseek-v4-flash),
 // M1-D001(9) 渲染接线冒烟 (renderCall/renderResult 已注册且构造 pi-tui 组件不崩; 渲染效果属 TS-002 人工验证).
 // 注: 渲染段 pi-tui 组件在测试环境仅模块加载/构造, 不调用 render (停止条件: 加载失败即停).
 
@@ -60,7 +60,7 @@ test("TC-001 builtin agents discoverable with full tools and default model", asy
       assert.ok(line, `名册应含内置 agent ${name}`);
       assert.ok(line!.slice(`- ${name}: `.length).trim() !== "", `${name} 描述非空`);
     }
-    // 数据面 (M1-D008): 均无 tools 字段 (全工具, spawn 不加 --tools); 均带默认 model (frontmatter 统一 deepseek/deepseek-v4-flash);
+    // 数据面 (M1-D008): 均无 tools 字段 (全工具, spawn 不加 --tools); 均带默认 model (frontmatter 统一 opencode-go/deepseek-v4-flash);
     // 默认 thinking: explorer/worker=high, reviewer=max (deepseek 仅 off/high/max 可用, off 排除); body (system prompt) 非空.
     const builtin = discoverAgents().filter((a) => ["explorer", "reviewer", "worker"].includes(a.name));
     assert.equal(builtin.length, 3);
@@ -72,7 +72,7 @@ test("TC-001 builtin agents discoverable with full tools and default model", asy
     assert.equal(thinkingOf("worker"), "high", "worker 默认 thinking=high");
     assert.equal(thinkingOf("reviewer"), "max", "reviewer 默认 thinking=max");
     for (const a of builtin) {
-      assert.equal(a.model, "deepseek/deepseek-v4-flash", `内置 agent ${a.name} 默认 model 应为 deepseek/deepseek-v4-flash`);
+      assert.equal(a.model, "opencode-go/deepseek-v4-flash", `内置 agent ${a.name} 默认 model 应为 opencode-go/deepseek-v4-flash`);
       assert.ok(a.systemPrompt.trim().length > 0, `${a.name} body (system prompt) 非空`);
     }
   } finally {
@@ -88,7 +88,7 @@ test("TC-002 explorer spawns without --tools and with default --model/--thinking
     const args = bundle.argv;
     assert.ok(!args.includes("--tools"), "explorer 无 tools 字段 → 省略 --tools (全工具)");
     assert.ok(args.includes("--model"), "内置 agent 带 frontmatter model → argv 含 --model");
-    assert.equal(args[args.indexOf("--model") + 1], "deepseek/deepseek-v4-flash", "默认 model = frontmatter 值");
+    assert.equal(args[args.indexOf("--model") + 1], "opencode-go/deepseek-v4-flash", "默认 model = frontmatter 值");
     assert.ok(args.includes("--thinking"), "explorer 带 frontmatter thinking → argv 含 --thinking");
     assert.equal(args[args.indexOf("--thinking") + 1], "high", "explorer 默认 thinking = high");
     assert.ok(!args.includes("-e"), "临时 HOME 无 resolve-skill 扩展 → argv 无 -e (静默跳过)");
@@ -128,7 +128,7 @@ test("TC-003 worker spawns with no --tools and default --model/--thinking", asyn
     const args = bundle.argv;
     assert.ok(!args.includes("--tools"), "worker 无 tools 字段 → argv 无 --tools (全工具语义)");
     assert.ok(args.includes("--model"), "worker frontmatter model → argv 含 --model");
-    assert.equal(args[args.indexOf("--model") + 1], "deepseek/deepseek-v4-flash");
+    assert.equal(args[args.indexOf("--model") + 1], "opencode-go/deepseek-v4-flash");
     assert.ok(args.includes("--thinking"), "worker frontmatter thinking → argv 含 --thinking");
     assert.equal(args[args.indexOf("--thinking") + 1], "high", "worker 默认 thinking = high");
   } finally {
