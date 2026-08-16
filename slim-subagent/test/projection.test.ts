@@ -28,7 +28,8 @@ function childPlaceholder(index: number): unknown {
     task: `task ${index}`,
     isError: false,
     text: "(running...)",
-    details: { usage: emptyUsage, runId: "run-batch", sessionDir: "", exitCode: -1 },
+    settled: false, // 候选叁: 显式运行态标记 (exitCode 不再是占位信号, 恒 0)
+    details: { usage: emptyUsage, runId: "run-batch", sessionDir: "", exitCode: 0 },
   };
 }
 
@@ -94,6 +95,7 @@ test("TS-002 parallel pending/active/done state machine and root summary", () =>
     task: "task 1",
     isError: false,
     text: "done output",
+    settled: true,
     details: {
       usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0.001, turns: 1 },
       runId: "run-batch",

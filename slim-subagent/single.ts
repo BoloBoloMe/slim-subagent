@@ -29,6 +29,8 @@ import { createLineProtocol, formatProtocolOutputLimit } from "./line-protocol.t
 import type { ProtocolOutputLimit } from "./line-protocol.ts";
 import { createBudgetMonitor } from "./budget-monitor.ts";
 import { createTerminationSupervisor, FINAL_STOP_GRACE_MS } from "./termination.ts";
+// 启动计划构建 (候选肆): argv 构建与生效 model/thinking 解析归 spawn-plan.ts 单一接缝.
+import { buildSpawnArgs, effectiveModelOf, effectiveThinkingOf } from "./spawn-plan.ts";
 
 // M3-02 考察点 2: message_end 事件 message 的解析所需最小面 (事件流来自 JSON.parse, 结构宽松).
 interface AgentMessageLike {
@@ -116,13 +118,15 @@ export interface SingleDetails {
 
 export type SingleToolResult = AgentToolResult<SingleDetails> & { isError?: boolean };
 
-// M3-02 考察点 6: 流式更新 payload (官方示例 base {content, details:{mode,results}} + progress 快照, D001 第 9 项 TUI 最小渲染依赖).
+// M3-02 考察点 6: 单次运行流式更新 payload (官方示例 base {content, details:{mode,results}} + progress 快照, D001 第 9 项 TUI 最小渲染依赖).
+// 候选叁: 本类型只描述 single/resume 帧; parallel 聚合帧是另一形态 (index.ts ParallelDetails) —
+// 消费侧经 mode 判别联合 (index.ts SubagentStreamDetails) 分支, 不再假装复用同一 payload.
 export interface ProgressSnapshot {
   recentTools: { tool: string; args: string; endMs: number }[];
   recentOutput: string[];
 }
-export interface StreamUpdateDetails {
-  mode: "single" | "parallel"; // ISSUE-07 deferred (b): parallel onUpdate 聚合流复用同 payload 形态
+export interface SingleStreamDetails {
+  mode: "single";
   results: SingleResult[];
   progress: ProgressSnapshot[];
   runId?: string; // ISSUE-08: live 帧携带 runId (viewer store 建批 + 投影节点键)
@@ -131,7 +135,7 @@ export interface StreamUpdateDetails {
   budgetAuto?: boolean;
   contextPercent?: number | null; // ISSUE-08: live 帧携带子代理口径 ctx% (运行中即可展示)
 }
-export type StreamUpdateCallback = (partial: AgentToolResult<StreamUpdateDetails>) => void;
+export type StreamUpdateCallback = (partial: AgentToolResult<SingleStreamDetails>) => void;
 
 // M1-D005: timeout 默认 15min (900000ms).
 // M1-D005: 恢复建议阈值 — 父会话上下文占用 > X% 判定进入 "迟钝区" (建议新起子代理而非 resume).
@@ -194,9 +198,8 @@ export function resolveEffectiveUsageBudget(
 }
 const DEFAULT_TIMEOUT_MS = 900000;
 
-// M3-04 考察点 2: task 内联转 @file 的字符上限.
-// 导出: ISSUE-06 resume follow-up 组装复用 (resume.ts).
-export const TASK_ARG_LIMIT = 8000;
+// M3-04 考察点 2: task 内联转 @file 上限 (TASK_ARG_LIMIT) / resolve-skill 扩展路径 / argv 构建 / 生效 model/thinking
+// 解析均归 spawn-plan.ts 单一接缝 (候选肆); resume.ts 与 index.ts 同源引用.
 
 // M3-01 考察点 5/6: 有界尾部缓冲 (rawStdoutTail / stderrTail 各 128KB) + 空输出判定消息.
 const MAX_TAIL_BYTES = 128 * 1024;
@@ -407,43 +410,7 @@ export function getPiInvocation(
   return { command: "pi", args };
 }
 
-// ---- M3-04 考察点 2 保留段 + EXECUTION.md 调和 8: args 组装. ----
-// base ["--mode","json","-p"], 恒 --session <per-run 文件>, --model 有才加, --tools csv 有才加,
-// 恒 --no-skills + --no-extensions (调和 8) + 显式 -e resolve-skill 例外 (--no-extensions 下显式 -e 仍生效,
-// 使全部子代理可用 resolve_skill; 文件缺失静默跳过), --append-system-prompt <temp 0600 文件>, Task: <task> (>8000 转 @file).
-// resolve-skill 扩展路径: user 级 ~/.pi/agent/extensions/resolve-skill.ts (与父会话同源单一真相, 不 vendoring).
-export function resolveSkillExtensionPath(): string | undefined {
-  const p = path.join(getAgentDir(), "extensions", "resolve-skill.ts");
-  return fs.existsSync(p) ? p : undefined;
-}
-
-function buildPiArgs(opts: {
-  agent: AgentConfig;
-  task: string;
-  model?: string;
-  thinking?: string;
-  sessionFile: string;
-  promptFile: string | null;
-  tmpDir: string;
-}): string[] {
-  const args: string[] = ["--mode", "json", "-p", "--session", opts.sessionFile];
-  if (opts.model) args.push("--model", opts.model);
-  if (opts.thinking) args.push("--thinking", opts.thinking);
-  if (opts.agent.tools && opts.agent.tools.length > 0) args.push("--tools", opts.agent.tools.join(","));
-  args.push("--no-skills", "--no-extensions");
-  const resolveSkillExt = resolveSkillExtensionPath();
-  if (resolveSkillExt) args.push("-e", resolveSkillExt);
-  if (opts.promptFile) args.push("--append-system-prompt", opts.promptFile);
-  if (opts.task.length > TASK_ARG_LIMIT) {
-    const safeName = opts.agent.name.replace(/[^\w.-]+/g, "_");
-    const taskFile = path.join(opts.tmpDir, `task-${safeName}.txt`);
-    fs.writeFileSync(taskFile, opts.task, "utf-8");
-    args.push("@" + taskFile);
-  } else {
-    args.push("Task: " + opts.task);
-  }
-  return args;
-}
+// ---- M3-04 考察点 2 保留段 + EXECUTION.md 调和 8: args 组装已归 spawn-plan.ts (buildSpawnArgs; 候选肆). ----
 
 // ---- 行解析 (M3-02 考察点 1/2) 与 close 结果构造 (M3-01 考察点 6 主路径). ----
 
@@ -1098,8 +1065,8 @@ export async function runSingleAgent(opts: {
     agent: opts.agent.name,
     data: { sessionDir, child: opts.skipRunJson === true },
   });
-  const effectiveModel = opts.model ?? opts.agent.model;
-  const effectiveThinking = opts.thinking ?? opts.agent.thinking;
+  const effectiveModel = effectiveModelOf(opts.model, opts.agent);
+  const effectiveThinking = effectiveThinkingOf(opts.thinking, opts.agent);
   if (!opts.skipRunJson) {
     try {
       writeRunJson({ runId, agent: opts.agent.name, model: effectiveModel, thinking: effectiveThinking, cwd: opts.cwd, startedAt: new Date().toISOString(), tools: opts.agent.tools }, sessionDir);
@@ -1114,13 +1081,13 @@ export async function runSingleAgent(opts: {
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
   try {
+    const safeName = opts.agent.name.replace(/[^\w.-]+/g, "_");
     let promptFile: string | null = null;
     if (opts.agent.systemPrompt.trim()) {
-      const safeName = opts.agent.name.replace(/[^\w.-]+/g, "_");
       promptFile = path.join(tmpDir, `prompt-${safeName}.md`);
       fs.writeFileSync(promptFile, opts.agent.systemPrompt, { encoding: "utf-8", mode: 0o600 }); // 0600 (M3-04 考察点 2)
     }
-    const args = buildPiArgs({ agent: opts.agent, task: opts.task, model: effectiveModel, thinking: effectiveThinking, sessionFile, promptFile, tmpDir });
+    const args = buildSpawnArgs({ task: opts.task, sessionFile, model: effectiveModel, thinking: effectiveThinking, tools: opts.agent.tools, promptFile, tmpDir, taskFileBase: `task-${safeName}` });
     // L09 (info): 即将 spawn (runProcess 调用前) — agent/model/runId/显式 timeoutMs/生效 usageBudget+budgetAuto.
     logEvent({
       level: "info",

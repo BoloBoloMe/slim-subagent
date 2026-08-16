@@ -1,6 +1,8 @@
 // ISSUE-06 Session Viewer (M13, PRD §5 + M07 D007/D008/D009/D011) — capturing 全屏 overlay.
 // 结构: 纯函数层 (tolerant JSONL reader / 批次时间线构建 / 磁盘回补 20 批, 不依赖 pi-tui, TDD 接缝)
 // + 内存 store (onUpdate 喂入, 同 id 覆盖, 不从磁盘反推运行中状态) + SessionViewerComponent (自绘 overlay).
+// 候选伍: 组件状态实例化 — ViewerState 经 opts.state 注入 (缺省模块级共享, 重开不重置),
+// 键盘流/滚动可自动化测试 (test/viewer-component.test.ts); 归档回补走 run-record.ts 接缝 (候选贰).
 // 键盘流 (D008): Tab/Shift+Tab/←/→ 循环切 tab + 数字 1-9 直跳; ↑/↓ Timeline=选批次, 子代理 tab=滚动;
 // PgUp/PgDn 翻页; Enter 仅 Timeline 确认换批; Esc/alt+v 关闭.
 // 数据源 (D011): 首 tab Timeline (上早下晚, 默认最新批次), 子代理 tab 从 session.jsonl 容忍读取
@@ -464,19 +466,18 @@ function initialTabState(follow: boolean): TabState {
   return { scroll: 0, follow };
 }
 
-/** 模块级 viewer 状态 (跨组件实例保留: Esc 重开 / ISSUE-08 toggle 重开不重置) */
-interface ViewerState {
+/** viewer 状态 (候选伍: 状态实例化) — 组件经 opts.state 注入; 生产缺省模块级共享实例
+ * (跨组件实例保留: Esc 重开 / ISSUE-08 toggle 重开不重置), 测试各建独立实例互不污染. */
+export interface ViewerState {
   tabIndex: number;
   convCursor: number;
   confirmedBatchId: string | null;
   tabs: Record<string, TabState>; // key: "timeline" | agent id
 }
-const state: ViewerState = {
-  tabIndex: 0,
-  convCursor: 0,
-  confirmedBatchId: null,
-  tabs: {},
-};
+export function createViewerState(): ViewerState {
+  return { tabIndex: 0, convCursor: 0, confirmedBatchId: null, tabs: {} };
+}
+const defaultViewerState: ViewerState = createViewerState();
 
 const TIMELINE_ID = "timeline";
 const HDR_LINES = 2;
@@ -590,6 +591,8 @@ export interface SessionViewerOpts {
   onClose?: () => void;
   /** 数据源读取 (store 批次集; disk 回补由接线侧预调 store.backfill) */
   getLive: () => ViewerLiveData;
+  /** 状态实例 (候选伍): 缺省模块级共享 defaultViewerState, 测试注入 createViewerState() 独立实例 */
+  state?: ViewerState;
 }
 
 interface TabDef {
@@ -599,21 +602,23 @@ interface TabDef {
 
 export class SessionViewerComponent implements Component {
   private opts: SessionViewerOpts;
+  private state: ViewerState;
   /** 最近一次 render 的 overlay 宽度 (handleInput 用, 与 render 宽度一致) */
   private lastRenderWidth = 0;
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(opts: SessionViewerOpts) {
     this.opts = opts;
+    this.state = opts.state ?? defaultViewerState;
     // 首次打开默认: 选中并确认最新批次 (时间线尾部, D007)
     const tl = opts.getLive().batches;
     if (tl.length > 0) {
-      if (!tl.some((b) => b.id === state.confirmedBatchId)) {
-        state.confirmedBatchId = tl[tl.length - 1].id;
-        state.convCursor = tl.length - 1;
-        state.tabIndex = 0;
+      if (!tl.some((b) => b.id === this.state.confirmedBatchId)) {
+        this.state.confirmedBatchId = tl[tl.length - 1].id;
+        this.state.convCursor = tl.length - 1;
+        this.state.tabIndex = 0;
       } else {
-        state.convCursor = clamp(state.convCursor, 0, tl.length - 1);
+        this.state.convCursor = clamp(this.state.convCursor, 0, tl.length - 1);
       }
     }
     // ISSUE-08: 周期刷新 — 驱动 spinner 帧轮转 + 子会话内容 live 重读 (transcriptCache 保证未变不重读盘).
@@ -638,7 +643,7 @@ export class SessionViewerComponent implements Component {
 
   private confirmedBatch(): ViewerBatch | null {
     const bs = this.batches();
-    return bs.find((b) => b.id === state.confirmedBatchId) ?? null;
+    return bs.find((b) => b.id === this.state.confirmedBatchId) ?? null;
   }
 
   private currentTabs(): TabDef[] {
@@ -661,24 +666,24 @@ export class SessionViewerComponent implements Component {
 
     if (matchesKey(data, "escape") || matchesKey(data, "alt+v")) { this.opts.done(null); return; }
     if (matchesKey(data, "tab") || matchesKey(data, "right")) {
-      state.tabIndex = (state.tabIndex + 1) % tabs.length;
+      this.state.tabIndex = (this.state.tabIndex + 1) % tabs.length;
       this.opts.tui.requestRender();
       return;
     }
     if (matchesKey(data, "shift+tab") || matchesKey(data, "left")) {
-      state.tabIndex = (state.tabIndex - 1 + tabs.length) % tabs.length;
+      this.state.tabIndex = (this.state.tabIndex - 1 + tabs.length) % tabs.length;
       this.opts.tui.requestRender();
       return;
     }
     for (let i = 0; i < tabs.length && i < 9; i++) {
       if (matchesKey(data, String(i + 1) as KeyId)) {
-        state.tabIndex = i;
+        this.state.tabIndex = i;
         this.opts.tui.requestRender();
         return;
       }
     }
 
-    const current = tabs[state.tabIndex]?.id ?? TIMELINE_ID;
+    const current = tabs[this.state.tabIndex]?.id ?? TIMELINE_ID;
     const isConv = current === TIMELINE_ID;
 
     if (matchesKey(data, "up")) {
@@ -706,12 +711,12 @@ export class SessionViewerComponent implements Component {
       return;
     }
     if (matchesKey(data, "home")) {
-      if (isConv) { state.convCursor = 0; this.opts.tui.requestRender(); }
+      if (isConv) { this.state.convCursor = 0; this.opts.tui.requestRender(); }
       else this.scrollToTop(current);
       return;
     }
     if (matchesKey(data, "end")) {
-      if (isConv) { state.convCursor = Math.max(0, this.batches().length - 1); this.opts.tui.requestRender(); }
+      if (isConv) { this.state.convCursor = Math.max(0, this.batches().length - 1); this.opts.tui.requestRender(); }
       else this.scrollToBottom(current);
       return;
     }
@@ -721,7 +726,7 @@ export class SessionViewerComponent implements Component {
   private moveCursor(delta: number): void {
     const n = this.batches().length;
     if (n === 0) return;
-    state.convCursor = clamp(state.convCursor + delta, 0, n - 1);
+    this.state.convCursor = clamp(this.state.convCursor + delta, 0, n - 1);
     this.opts.tui.requestRender();
   }
 
@@ -729,9 +734,9 @@ export class SessionViewerComponent implements Component {
   private confirmCursor(): void {
     const bs = this.batches();
     if (bs.length === 0) return;
-    const b = bs[clamp(state.convCursor, 0, bs.length - 1)];
-    state.confirmedBatchId = b.id;
-    state.tabIndex = clamp(state.tabIndex, 0, this.currentTabs().length - 1);
+    const b = bs[clamp(this.state.convCursor, 0, bs.length - 1)];
+    this.state.confirmedBatchId = b.id;
+    this.state.tabIndex = clamp(this.state.tabIndex, 0, this.currentTabs().length - 1);
     this.opts.tui.requestRender();
   }
 
@@ -760,7 +765,7 @@ export class SessionViewerComponent implements Component {
     const rows = this.contentRows();
     const total = this.totalLines(tabId);
     if (total <= rows) return;
-    const ts = state.tabs[tabId] ?? initialTabState(true);
+    const ts = this.state.tabs[tabId] ?? initialTabState(true);
     const maxScroll = Math.max(0, total - rows);
     if (ts.follow && delta < 0) {
       ts.follow = false;
@@ -769,29 +774,29 @@ export class SessionViewerComponent implements Component {
       ts.scroll = clamp(ts.scroll + delta, 0, maxScroll);
     }
     if (delta > 0 && ts.scroll >= maxScroll) ts.follow = true;
-    state.tabs[tabId] = ts;
+    this.state.tabs[tabId] = ts;
     this.opts.tui.requestRender();
   }
 
   private scrollToTop(tabId: string): void {
-    const ts = state.tabs[tabId] ?? initialTabState(true);
+    const ts = this.state.tabs[tabId] ?? initialTabState(true);
     ts.follow = false;
     ts.scroll = 0;
-    state.tabs[tabId] = ts;
+    this.state.tabs[tabId] = ts;
     this.opts.tui.requestRender();
   }
 
   private scrollToBottom(tabId: string): void {
-    const ts = state.tabs[tabId] ?? initialTabState(true);
+    const ts = this.state.tabs[tabId] ?? initialTabState(true);
     ts.follow = true;
     ts.scroll = Math.max(0, this.totalLines(tabId) - this.contentRows());
-    state.tabs[tabId] = ts;
+    this.state.tabs[tabId] = ts;
     this.opts.tui.requestRender();
   }
 
   /** 渲染期 follow 应用: 开 → 滚到底; 关 → clamp, 滚回底部自动恢复 (子代理 tab 语义, D007) */
   private applyFollow(tabId: string, total: number, rows: number): void {
-    const ts = state.tabs[tabId] ?? initialTabState(true);
+    const ts = this.state.tabs[tabId] ?? initialTabState(true);
     const maxScroll = Math.max(0, total - rows);
     if (isAgentTab(tabId) && ts.follow) {
       ts.scroll = maxScroll;
@@ -799,7 +804,7 @@ export class SessionViewerComponent implements Component {
       ts.scroll = clamp(ts.scroll, 0, maxScroll);
       if (isAgentTab(tabId) && ts.scroll >= maxScroll) ts.follow = true;
     }
-    state.tabs[tabId] = ts;
+    this.state.tabs[tabId] = ts;
   }
 
   // ---- 渲染 ----
@@ -811,14 +816,14 @@ export class SessionViewerComponent implements Component {
     const availH = Math.max(10, termRows - 2); // 全屏 overlay margin top/bottom = 1
     const contentRows = Math.max(3, availH - HDR_LINES - TAB_LINES - FTR_LINES);
     const tabs = this.currentTabs();
-    const tabId = tabs[state.tabIndex]?.id ?? TIMELINE_ID;
+    const tabId = tabs[this.state.tabIndex]?.id ?? TIMELINE_ID;
 
     const out: string[] = [];
     for (const l of this.headerLines(w)) out.push(l);
     out.push(this.tabBarLine(tabs, w));
     const visual = this.visualLines(tabId);
     this.applyFollow(tabId, visual.length, contentRows);
-    const sc = (state.tabs[tabId] ?? initialTabState(true)).scroll;
+    const sc = (this.state.tabs[tabId] ?? initialTabState(true)).scroll;
     out.push(...visual.slice(sc, sc + contentRows));
     while (out.length < HDR_LINES + TAB_LINES + contentRows) out.push("");
     out.push(this.footerLine(tabId, w));
@@ -859,7 +864,7 @@ export class SessionViewerComponent implements Component {
     const th = this.opts.theme;
     const segs = tabs.map((t, i) => {
       const label = `[${t.label}]`;
-      if (i === state.tabIndex) {
+      if (i === this.state.tabIndex) {
         const inner = th.fg("accent", label);
         return th.inverse ? th.inverse(inner) : inner;
       }
@@ -898,7 +903,7 @@ export class SessionViewerComponent implements Component {
     const agent = b?.agents.find((a) => a.id === agentId);
     if (!agent) return "";
     const segs: string[] = [];
-    const ts = state.tabs[agentId] ?? initialTabState(true);
+    const ts = this.state.tabs[agentId] ?? initialTabState(true);
     segs.push(ts.follow ? "follow 开" : "已暂停 follow");
     const ctx = agent.contextPercent;
     segs.push(ctx !== undefined && ctx !== null ? `ctx ${Math.round(ctx * 10) / 10}%` : "ctx —");
@@ -915,7 +920,7 @@ export class SessionViewerComponent implements Component {
   // ---- 内容构建 ----
 
   private buildContent(tabId: string, _w: number): ContentLine[] {
-    if (tabId === TIMELINE_ID) return buildConversationContent(this.batches(), state.convCursor, state.confirmedBatchId);
+    if (tabId === TIMELINE_ID) return buildConversationContent(this.batches(), this.state.convCursor, this.state.confirmedBatchId);
     const b = this.confirmedBatch();
     const agent = b?.agents.find((a) => a.id === tabId);
     if (!agent) return [{ plain: "(无会话数据)", color: "muted" }];

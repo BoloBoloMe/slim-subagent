@@ -21,10 +21,12 @@ import type { ProjectionInput } from "./projection.ts";
 import { discoverAgents, formatAgentList } from "./agents.ts";
 import type { AgentConfig } from "./agents.ts";
 import { runSingleAgent, makeRunId, sessionRootDir, sessionsRootDir, resolveEffectiveUsageBudget } from "./single.ts";
-import type { SingleDetails, StreamUpdateCallback, Usage } from "./single.ts";
+import type { SingleDetails, SingleStreamDetails, StreamUpdateCallback, Usage } from "./single.ts";
 import { runResume, runSessionGc } from "./resume.ts";
 // 目录布局单一真相 (候选贰): parallel child run-<idx> 约定由 run-record.ts 拥有.
 import { childSessionDirOf } from "./run-record.ts";
+// 生效 model/thinking 解析 (候选肆): 单一实现归 spawn-plan 接缝, 替代原三副本.
+import { effectiveModelOf, effectiveThinkingOf } from "./spawn-plan.ts";
 // ISSUE-01: 日志插桩 (仅加日志调用, 不改执行逻辑; 写失败静默吞, 见 log.ts).
 import { logEvent, taskPreviewOf, runLogGc } from "./log.ts";
 // ISSUE-08: 接线依赖 — viewer (store/组件/建批).
@@ -114,12 +116,14 @@ function validateExecuteParams(
 }
 
 // ISSUE-05: parallel 聚合结果类型 — 每 child 独立 isError (M2-D004), details 透传 (runId/sessionDir, M2-D006).
+// 候选叁: settled 显式标记运行态 (false = 预建占位/running, true = 真实结果) — 替代原 exitCode:-1 魔法占位.
 export interface ParallelChildResult {
   index: number;
   agent: string;
   task: string;
   isError: boolean;
   text: string;
+  settled: boolean;
   details: SingleDetails;
 }
 export interface ParallelDetails {
@@ -128,6 +132,9 @@ export interface ParallelDetails {
   results: ParallelChildResult[];
   progress: ParallelChildProgress[];
 }
+// 候选叁: 流式更新信封 — 判别联合, mode 为判别字段 (single 帧 = SingleStreamDetails, parallel 帧 = ParallelDetails).
+// 契约注释与实现同一真相: single.ts 只产 single 帧, 本文件 emitParallelUpdate 只产 parallel 帧.
+export type SubagentStreamDetails = SingleStreamDetails | ParallelDetails;
 // ISSUE-03 (F1, M07 D013): per-child 实时进度快照 — 每个 child 预建一行,
 // 运行中由 runSingleAgent onUpdate 透传 recentTools/recentOutput/usage/model/isError,
 // 汇入聚合 details.progress (深拷贝快照, 防闭包污染).
@@ -259,7 +266,7 @@ async function runParallelTasks(
     const timeoutMs = typeof t.timeoutMs === "number" ? t.timeoutMs : defaultTimeout;
     const explicitBudget = (t.usageBudget as number | undefined) ?? defaultBudget;
     // 强制预算: 每 child 未显式传 budget → 自动 0.7 × 该 child 模型窗口 (与 single 同一解析函数).
-    const eff = agent ? resolveEffectiveUsageBudget(explicitBudget, model ?? agent.model, ctx) : undefined;
+    const eff = agent ? resolveEffectiveUsageBudget(explicitBudget, effectiveModelOf(model, agent), ctx) : undefined;
     const usageBudget = eff?.budget;
     const budgetAuto = eff?.auto;
     return { item: t, agent, model, thinking, timeoutMs, usageBudget, budgetAuto };
@@ -272,9 +279,9 @@ async function runParallelTasks(
       cwd,
       startedAt: new Date().toISOString(),
       tasks: resolved.map((r) => {
-        // model/thinking 取完全生效值 (item 覆盖 ?? 顶层默认 ?? agent 默认 (settings.json subagent), 对齐 runSingleAgent effectiveModel/effectiveThinking).
-        const effectiveModel = r.model ?? r.agent?.model;
-        const effectiveThinking = r.thinking ?? r.agent?.thinking;
+        // model/thinking 取完全生效值 (item 覆盖 ?? 顶层默认 ?? agent 默认, 经 spawn-plan 接缝单一解析).
+        const effectiveModel = effectiveModelOf(r.model, r.agent);
+        const effectiveThinking = effectiveThinkingOf(r.thinking, r.agent);
         return {
           agent: String(r.item.agent),
           task: typeof r.item.task === "string" ? r.item.task : "",
@@ -287,11 +294,11 @@ async function runParallelTasks(
     batchRoot,
   );
 
-  // ISSUE-07 deferred (b): parallel onUpdate 聚合流 (官方 :596-608 最小版) — allResults 槽位 (exitCode -1 = running 占位)
+  // ISSUE-07 deferred (b): parallel onUpdate 聚合流 (官方 :596-608 最小版) — allResults 槽位 (settled:false = running 预建占位)
   // + completedFlags 计数; 初始 1 次 + 每 child 完成后各 1 次. 不做 per-child 流式镜像 (最小版, 超出 :596-608 范围).
   const allResults: ParallelChildResult[] = tasks.map((t, i) => ({
     index: i, agent: typeof t.agent === "string" ? t.agent : "", task: typeof t.task === "string" ? t.task : "",
-    isError: false, text: "(running...)", details: { usage: emptyUsage(), runId: batchRunId, sessionDir: childSessionDirOf(batchRoot, i), exitCode: -1 },
+    isError: false, text: "(running...)", settled: false, details: { usage: emptyUsage(), runId: batchRunId, sessionDir: childSessionDirOf(batchRoot, i), exitCode: 0 },
   }));
   // ISSUE-03 (F1): per-child 进度预建行 (同 allResults 预建, pending → active 转换不丢行) —
   // childIndex/agent 固定, recentTools/recentOutput 空, usage 零值, isError false.
@@ -325,7 +332,7 @@ async function runParallelTasks(
       // L32 (error): 未知 agent — 该子任务独立失败, 不阻塞整批.
       logEvent({ level: "error", event: "parallel.child.unknown_agent", mode: "parallel", batchRunId, childIndex: index, agent: String(t.agent) });
       const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
-      const failed: ParallelChildResult = { index, agent: String(t.agent), task, isError: true, text: `Unknown agent: "${String(t.agent)}". Available agents: ${available}.`, details: { usage: emptyUsage(), runId: "", sessionDir: "", exitCode: 1 } };
+      const failed: ParallelChildResult = { index, agent: String(t.agent), task, isError: true, text: `Unknown agent: "${String(t.agent)}". Available agents: ${available}.`, settled: true, details: { usage: emptyUsage(), runId: "", sessionDir: "", exitCode: 1 } };
       allResults[index] = failed;
       childProgress[index].isError = true; // ISSUE-03: 未知 agent 分支无流式事件, 进度行直接标记失败
       completedFlags[index] = true;
@@ -366,7 +373,7 @@ async function runParallelTasks(
         emitParallelUpdate();
       },
     });
-    const completed: ParallelChildResult = { index, agent: agent.name, task, isError: res.isError === true, text: resultTextOf(res), details: res.details };
+    const completed: ParallelChildResult = { index, agent: agent.name, task, isError: res.isError === true, text: resultTextOf(res), settled: true, details: res.details };
     allResults[index] = completed;
     completedFlags[index] = true;
     // L31 (info): 子任务完成 (正常分支).
@@ -494,13 +501,14 @@ export default function (pi: ExtensionAPI) {
       });
 
       // ISSUE-08: onUpdate 包一层喂 viewer store (投影→建批→upsert; 失败不阻断流式).
-      const feedOnUpdate: StreamUpdateCallback = (partial) => {
+      // 候选叁: 信封判别联合 — single/resume 帧与 parallel 聚合帧同经此喂养, mode 为判别字段.
+      const feedOnUpdate = (partial: AgentToolResult<SubagentStreamDetails>): void => {
         try {
           const nodes = projectSlimDetailsToRunNodes({ toolCallId: _toolCallId, details: partial.details as ProjectionInput["details"] });
           const batch = batchFromLiveNodes(nodes);
           if (batch) viewerStore.upsert(batch);
         } catch { /* 投影/建批失败不阻断 */ }
-        onUpdate?.(partial);
+        (onUpdate as ((p: AgentToolResult<SubagentStreamDetails>) => void) | undefined)?.(partial);
       };
 
       // TS-002: action:"list" (M1-D009 最小名册), agent 可省 (M2-D008).
@@ -554,7 +562,7 @@ export default function (pi: ExtensionAPI) {
       const explicitBudget = params?.usageBudget as number | undefined;
       // 强制预算 (用户协议): 未显式传 → 自动 0.7 × 子代理模型窗口 (window 查询 modelRegistry, 与父会话同源);
       // 载荷携带 budget/auto 供父会话诊断 (中止 content 亦报出).
-      const eff = resolveEffectiveUsageBudget(explicitBudget, model ?? agent.model, _ctx);
+      const eff = resolveEffectiveUsageBudget(explicitBudget, effectiveModelOf(model, agent), _ctx);
       // TS-004: 取消监听 (AbortSignal) 透传 — abort → SIGTERM → 3s SIGKILL (M3-01 考察点 4);
       // 本切片: onUpdate 透传 (M3-02 考察点 6 触发点/payload 见 single.ts).
       return runSingleAgent({ agent, task, model, thinking, cwd, timeoutMs, usageBudget: eff.budget, budgetAuto: eff.auto, ctx: _ctx, signal: _signal, onUpdate: feedOnUpdate });

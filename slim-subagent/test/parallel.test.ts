@@ -434,7 +434,7 @@ test("TC-009 parallel onUpdate aggregates streaming progress", async () => {
     const last = updates[updates.length - 1]!;
     assert.equal(last.content[0]!.text, "Parallel: 2/2 done, 0 running...");
     assert.equal(last.details.results.length, 2);
-    assert.ok(last.details.results.every((r) => r.details.exitCode !== -1), "最终更新所有 child 应已完成");
+    assert.ok(last.details.results.every((r) => r.settled === true), "最终更新所有 child 应已 settle (候选叁显式标记)");
     assert.deepEqual(last.details.results.map((r) => r.text), ["Hello from fake assistant", "Hello from fake assistant"]);
     assert.ok(Array.isArray(last.details.progress), "parallel onUpdate details 应含 progress 数组 (最终更新)");
   } finally {

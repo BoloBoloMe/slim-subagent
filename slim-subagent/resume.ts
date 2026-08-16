@@ -14,14 +14,14 @@ import {
   assembleSingleResult,
   emptyUsage,
   resolveEffectiveUsageBudget,
-  resolveSkillExtensionPath,
   runProcess,
   sessionRootDir,
   sessionsRootDir,
-  TASK_ARG_LIMIT,
   writeRunJsonSettle,
 } from "./single.ts";
 import type { SingleDetails, StreamUpdateCallback } from "./single.ts";
+// 启动计划构建 (候选肆): argv 构建与生效 model 解析归 spawn-plan.ts 单一接缝.
+import { buildSpawnArgs, effectiveModelOf } from "./spawn-plan.ts";
 import { acquireSessionLease, releaseSessionLease, isLeaseActive } from "./session-lease.ts";
 import type { LeaseOwner } from "./session-lease.ts";
 // ISSUE-01: 日志插桩 (仅加日志调用, 不改执行逻辑; 写失败静默吞, 见 log.ts).
@@ -98,35 +98,9 @@ export function findRunForResume(id: string): ResumedRunInfo {
   };
 }
 
-// 恢复 spawn 参数 (考察点 1 移植规格 4 + 调和 14): --session 原文件 + --model/--tools 按 run.json 快照
-// (agent 定义事后被删/改不影响恢复) + --append-system-prompt 原 agent prompt 重建 + follow-up 原文追加
-// (接受中断 turn 重复, M3 §四 #5).
-function buildResumeArgs(opts: {
-  model?: string;
-  thinking?: string;
-  tools?: string[];
-  sessionFile: string;
-  promptFile: string | null;
-  tmpDir: string;
-  task: string;
-}): string[] {
-  const args: string[] = ["--mode", "json", "-p", "--session", opts.sessionFile];
-  if (opts.model) args.push("--model", opts.model);
-  if (opts.thinking) args.push("--thinking", opts.thinking);
-  if (opts.tools && opts.tools.length > 0) args.push("--tools", opts.tools.join(","));
-  args.push("--no-skills", "--no-extensions");
-  const resolveSkillExt = resolveSkillExtensionPath();
-  if (resolveSkillExt) args.push("-e", resolveSkillExt);
-  if (opts.promptFile) args.push("--append-system-prompt", opts.promptFile);
-  if (opts.task.length > TASK_ARG_LIMIT) {
-    const taskFile = path.join(opts.tmpDir, "task-resume.txt");
-    fs.writeFileSync(taskFile, opts.task, "utf-8");
-    args.push("@" + taskFile);
-  } else {
-    args.push("Task: " + opts.task);
-  }
-  return args;
-}
+// 恢复 spawn 参数 (考察点 1 移植规格 4 + 调和 14): argv 构建归 spawn-plan.ts buildSpawnArgs —
+// --session 原文件 + --model/--tools 按 run.json 快照 (agent 定义事后被删/改不影响恢复) +
+// --append-system-prompt 原 agent prompt 重建 + follow-up 原文追加 (接受中断 turn 重复, M3 §四 #5).
 
 // execute (resume) 主入口: 参数校验 (调和 6: id+task 必填, model 同用报错) → 寻址/校验 → 恢复 spawn
 // → 复用 single 结果回收全路径 (assembleSingleResult) + resumed:true + 原 runId/sessionDir (调和 13).
@@ -194,7 +168,7 @@ export async function runResume(
   const cwd = typeof params.cwd === "string" && params.cwd !== "" ? params.cwd : run.cwd;
 
   // 强制预算 (用户协议): resume (含收尾) 同样强制 — 未显式传 budget → 自动 0.7 × 原 run 模型窗口.
-  const eff = resolveEffectiveUsageBudget(usageBudget, run.model ?? agent.model, ctx);
+  const eff = resolveEffectiveUsageBudget(usageBudget, effectiveModelOf(run.model, agent), ctx);
 
   // TS-002: spawn 前 acquire 锁 (M3-03 考察点 3 规格 3: resume 全流程持有; 活冲突报错不排队, stale 回收重试 ≤2).
   let lease: LeaseOwner;
@@ -227,7 +201,7 @@ export async function runResume(
       promptFile = path.join(tmpDir, `prompt-${safeName}.md`);
       fs.writeFileSync(promptFile, agent.systemPrompt, { encoding: "utf-8", mode: 0o600 });
     }
-    const args = buildResumeArgs({ model: run.model, thinking: run.thinking, tools: run.tools, sessionFile: run.sessionFile, promptFile, tmpDir, task });
+    const args = buildSpawnArgs({ task, sessionFile: run.sessionFile, model: run.model, thinking: run.thinking, tools: run.tools, promptFile, tmpDir, taskFileBase: "task-resume" });
     // L38 (info): resume 子进程 spawn 前 (与 single.spawn.start 同构载荷).
     logEvent({ level: "info", event: "resume.spawn.start", mode: "resume", runId: run.runId, agent: run.agent, model: run.model, timeoutMsExplicit: timeoutMs, usageBudgetExplicit: eff.budget });
     // M02 D002: spawn 前捕获 (与 resume settle 补丁 endedAtMs 配对).
@@ -253,7 +227,7 @@ export async function runResume(
       usageBudget: eff.budget,
       budgetAuto: eff.auto,
       ctx,
-      model: run.model ?? agent.model,
+      model: effectiveModelOf(run.model, agent),
       task,
       timeoutMs,
       startedAtMs,

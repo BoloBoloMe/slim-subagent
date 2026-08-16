@@ -4,7 +4,8 @@
 // §4.0 必填字段与窄行省略 (cost→CH→cap→timeout→recent→task→usage, 死保 status/model/ctx/elapsed);
 // CH 段 (cozy 且 cacheRead>0); 密度开关 (cozy 全字段 / compact 预省 cost/CH/cap/timeout).
 // 分层: 纯函数层 (renderRunNodeLines/renderParallelLines/computeCh/formatStatusIcon) 不依赖 pi-tui,
-// 是 TDD 接缝 (test/card.test.ts); 组件层 (renderRunCard/RunCardComponent + spinner) 收 context.invalidate.
+// 是 TDD 接缝 (test/card.test.ts); 组件层 (renderRunCard/RunCardComponent + RunCardSpinner) 收 context.invalidate.
+// 候选伍: spinner 三全局收进 RunCardSpinner 实例 (生产共享默认实例, 测试各建独立实例, test/card-spinner.test.ts).
 // 参考: milestone-05/prototype/index.ts (cCard/spinner 机制, 搬运逻辑不搬运原型债); 卡上无按钮/copy (D010).
 
 import type { Component } from "@earendil-works/pi-tui";
@@ -327,46 +328,68 @@ interface CardRenderOptions {
   animate?: boolean;
 }
 
-let cardInvalidator: (() => void) | null = null;
-let cardTimer: ReturnType<typeof setInterval> | null = null;
-let lastFrameIdx = -1;
-
 function frameIndexAt(now: number): number {
   return Math.floor(now / SPINNER_MS) % SPINNER_FRAMES.length;
 }
 
-/** 注册最新卡渲染上下文为 active spinner invalidator; 90ms 驱动一次重绘 (帧未变跳过, 防闪烁). */
-export function startRunCardSpinner(invalidate: () => void): void {
-  cardInvalidator = invalidate; // 同一张卡的历次 render 上下文只留最新
-  if (cardTimer) return;
-  cardTimer = setInterval(() => {
-    const inv = cardInvalidator;
-    if (!inv) {
-      if (cardTimer) {
-        clearInterval(cardTimer);
-        cardTimer = null;
+/** Run Card spinner (候选伍: 原模块级三全局 cardInvalidator/cardTimer/lastFrameIdx 收进实例) —
+ * 生产用共享默认实例 (原行为: 多卡同帧只最新卡驱动, 单定时器); 测试各建独立实例验证隔离. */
+export class RunCardSpinner {
+  private invalidator: (() => void) | null = null;
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private lastFrameIdx = -1;
+
+  /** 注册最新卡渲染上下文为 active invalidator; 90ms 驱动一次重绘 (帧未变跳过, 防闪烁). */
+  start(invalidate: () => void): void {
+    this.invalidator = invalidate; // 同一张卡的历次 render 上下文只留最新
+    if (this.timer) return;
+    this.timer = setInterval(() => {
+      const inv = this.invalidator;
+      if (!inv) {
+        if (this.timer) {
+          clearInterval(this.timer);
+          this.timer = null;
+        }
+        return;
       }
-      return;
+      const idx = frameIndexAt(Date.now());
+      if (idx === this.lastFrameIdx) return; // 帧未变, 内容不变不重绘
+      this.lastFrameIdx = idx;
+      try {
+        inv();
+      } catch {
+        this.invalidator = null; // 失效上下文, 下轮停表
+      }
+    }, SPINNER_MS);
+    this.timer.unref?.();
+  }
+
+  /** settled (终态) 即停: 清 invalidator + 停表. */
+  stop(): void {
+    this.invalidator = null;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
     }
-    const idx = frameIndexAt(Date.now());
-    if (idx === lastFrameIdx) return; // 帧未变, 内容不变不重绘
-    lastFrameIdx = idx;
-    try {
-      inv();
-    } catch {
-      cardInvalidator = null; // 失效上下文, 下轮停表
-    }
-  }, SPINNER_MS);
-  cardTimer.unref?.();
+  }
+
+  /** 测试面: 是否有 active invalidator. */
+  get active(): boolean {
+    return this.invalidator !== null;
+  }
 }
 
-/** settled (终态) 即停: 清 invalidator + 停表. */
+// 生产共享默认实例 (多卡并存仍只最新卡驱动 — 原模块级语义保留).
+const defaultRunCardSpinner = new RunCardSpinner();
+
+/** 注册最新卡渲染上下文为 active spinner invalidator (共享默认实例). */
+export function startRunCardSpinner(invalidate: () => void): void {
+  defaultRunCardSpinner.start(invalidate);
+}
+
+/** settled (终态) 即停 (共享默认实例). */
 export function stopRunCardSpinner(): void {
-  cardInvalidator = null;
-  if (cardTimer) {
-    clearInterval(cardTimer);
-    cardTimer = null;
-  }
+  defaultRunCardSpinner.stop();
 }
 
 /** 是否有仍在转的 active/pending 节点 (终态判据). */

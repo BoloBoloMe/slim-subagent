@@ -209,7 +209,7 @@ function projectSingle(d: Record<string, unknown>, callParams: ProjectionCallPar
 // ---- parallel 分支 (root + children). ----
 
 function projectParallel(d: Record<string, unknown>, callParams: ProjectionCallParams | undefined): RunNode[] {
-  const results = (d.results as { index: number; agent: string; task: string; isError?: boolean; details: SingleDetails }[] | undefined) ?? [];
+  const results = (d.results as { index: number; agent: string; task: string; isError?: boolean; settled?: boolean; details: SingleDetails }[] | undefined) ?? [];
   const progress = (d.progress as { childIndex: number; agent: string; scheduled?: boolean; usage?: SlimUsage; model?: string; isError?: boolean; recentTools?: { tool: string; args: string; endMs: number }[]; recentOutput?: string[] }[] | undefined) ?? [];
   const batchRunId = (d.runId as string | undefined) ?? "";
   const total = Math.max(results.length, progress.length);
@@ -218,8 +218,9 @@ function projectParallel(d: Record<string, unknown>, callParams: ProjectionCallP
   for (let i = 0; i < total; i++) {
     const pr = progress[i];
     const rr = results[i];
-    // 完成判定: 占位槽 (exitCode -1 = running) 非真实; 真实结果含 settle 后 exitCode.
-    const real = rr !== undefined && rr.details !== undefined && (rr.details as SingleDetails).exitCode !== -1;
+    // 完成判定 (候选叁): settled 显式标记 — 预建占位槽 settled:false = running, 真实结果 settled:true
+    // (替代原 exitCode:-1 魔法占位: 并行特有运行态不再混进共享 SingleDetails 类型).
+    const real = rr !== undefined && rr.settled === true;
     // pending 判据 (D008): scheduled===false 且未完成 (未达 L30, 未进 worker).
     const pending = !real && pr !== undefined && pr.scheduled === false;
     const status: DisplayStatus = pending ? "pending" : real ? terminalStatusOf(rr.details) : "active";
