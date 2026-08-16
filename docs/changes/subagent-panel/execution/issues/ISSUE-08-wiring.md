@@ -4,7 +4,7 @@
 - `../EXECUTION.md`
 
 ## 执行(Execution)
-- [ ] 已实现
+- [x] 已实现
 
 ## 要构建什么
 主会话统一接线 (非独立领取): registerCommand `/agent-sessions` + `/agent-diagnose`; registerShortcut `alt+v`; **schema/action 注册** (diagnose 入 subagent schema); viewer `d` 键接通 diagnose.ts 真实入口 (替换 ISSUE-06 的桩); index.ts 最终整理. 完成后全链路: 命令/快捷键 → viewer/diagnose → 真实数据. HITL/integration 原因: 并行三片的共享接线点, 归主会话 (M08 D002).
