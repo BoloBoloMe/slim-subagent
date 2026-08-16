@@ -13,10 +13,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-// ISSUE-07: TUI 最小渲染依赖 (官方示例同法 import; 测试环境仅模块加载/构造, 不调用 render).
-import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
+import { renderRunCard } from "./card.ts";
+import { projectSlimDetailsToRunNodes } from "./projection.ts";
+import type { ProjectionInput, RunNode } from "./projection.ts";
 import { discoverAgents, formatAgentList } from "./agents.ts";
 import type { AgentConfig } from "./agents.ts";
 import { runSingleAgent, makeRunId, sessionRootDir, resolveEffectiveUsageBudget } from "./single.ts";
@@ -28,8 +29,7 @@ import { logEvent, taskPreviewOf, runLogGc } from "./log.ts";
 // ISSUE-05: 官方示例 index.ts:33-34 同款常量 (M1-D001(2): 并发 4 / 最大 8, 硬编码不可调).
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
-// ISSUE-07: 官方示例 :36-37 同款常量 — 折叠态行数上限 / parallel 汇总 per-task 输出字节上限.
-const COLLAPSED_ITEM_COUNT = 10;
+// ISSUE-07: 官方示例 :36-37 同款常量 — parallel 汇总 per-task 输出字节上限.
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
 
 // 工具描述: 阻塞语义 + 接口速记 + list/resume 操作语义 (schema 参数描述里没有的);
@@ -127,27 +127,6 @@ function emptyUsage() {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 }
 
-// ---- ISSUE-07: TUI 最小渲染辅助 (官方示例 index.ts 移植最小版; 效果人工验证 TS-002). ----
-
-function formatTokens(count: number): string {
-  if (count < 1000) return count.toString();
-  if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-  if (count < 1000000) return `${Math.round(count / 1000)}k`;
-  return `${(count / 1000000).toFixed(1)}M`;
-}
-
-// usage 统计行 (tokens/cost/turns/model, 官方 formatUsageStats 最小版).
-function formatUsageStats(usage: Usage, model?: string): string {
-  const parts: string[] = [];
-  if (usage.turns) parts.push(`${usage.turns} turn${usage.turns > 1 ? "s" : ""}`);
-  if (usage.input) parts.push(`↑${formatTokens(usage.input)}`);
-  if (usage.output) parts.push(`↓${formatTokens(usage.output)}`);
-  if (usage.cacheRead) parts.push(`R${formatTokens(usage.cacheRead)}`);
-  if (usage.cacheWrite) parts.push(`W${formatTokens(usage.cacheWrite)}`);
-  if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
-  if (model) parts.push(model);
-  return parts.join(" ");
-}
 
 // ISSUE-07 deferred (c): parallel 汇总 per-task 输出 50KB 截断 (官方 :36/:193-202 最小版, 字节安全).
 // 导出: 单测直接断言 (TC-011).
@@ -391,102 +370,44 @@ async function runParallelTasks(
   };
 }
 
-// ---- ISSUE-07: TUI 最小渲染 (M1-D001(9), 官方示例 :700-/:744- 最小版; 效果人工验证 TS-002). ----
-// 折叠 ≤COLLAPSED_ITEM_COUNT 行 + Ctrl+O 展开; 展开态 Container + Markdown; usage 统计行; getMarkdownTheme 仅展开态调用.
+// ---- ISSUE-05: Inline Live Run Card (PRD §4.1 变体 C, M07 D001-D005/D008) — 渲染接线 ----
+// card.ts 承担全部渲染 (纯函数层 renderRunNodeLines/renderParallelLines + 组件层 renderRunCard/spinner).
+// 本文件只做两类因子: renderCall 用调用侧快照预建节点 (projection ProjectionCallParams 同形),
+// renderResult 把 result.details 交给 projectSlimDetailsToRunNodes (ISSUE-04 投影) → 卡组件.
 
-function renderCallComponent(args: { agent?: unknown; task?: unknown; tasks?: unknown[] }, theme: Theme): Component {
-  const preview = (s: unknown, n: number) => { const str = typeof s === "string" ? s : ""; return str.length > n ? `${str.slice(0, n)}...` : str; };
-  let text = theme.fg("toolTitle", theme.bold("subagent "));
-  if (Array.isArray(args.tasks) && args.tasks.length > 0) {
-    text += theme.fg("accent", `parallel (${args.tasks.length} tasks)`);
-    for (const t of args.tasks.slice(0, 3)) {
-      const item = (t ?? {}) as { agent?: unknown; task?: unknown };
-      text += `\n  ${theme.fg("accent", typeof item.agent === "string" ? item.agent : "?")}${theme.fg("dim", ` ${preview(item.task, 40)}`)}`;
-    }
-    if (args.tasks.length > 3) text += `\n  ${theme.fg("muted", `... +${args.tasks.length - 3} more`)}`;
-  } else {
-    text += theme.fg("accent", typeof args.agent === "string" ? args.agent : "...");
-    text += `\n  ${theme.fg("dim", preview(args.task, 60) || "...")}`;
+// renderCall 前置帧 (execution 未开始): single = agent+task+model/timeout/cap 展示字段;
+// parallel = 聚合 root + tasks[] 全量 pending 预建行 (未达 L30, D008 不伪造 model/ctx/elapsed/usage).
+function callFrameNodes(args: { agent?: unknown; task?: unknown; tasks?: unknown[]; model?: unknown; timeoutMs?: unknown; usageBudget?: unknown }): RunNode[] {
+  const tasks = Array.isArray(args.tasks) ? (args.tasks as { agent?: unknown; task?: unknown; model?: unknown; timeoutMs?: unknown; usageBudget?: unknown }[]) : [];
+  if (tasks.length > 0) {
+    const children: RunNode[] = tasks.map((t, i) => ({
+      id: `#${i}`,
+      kind: "parallel-child" as const,
+      parentId: "",
+      agent: typeof t.agent === "string" ? t.agent : "?",
+      taskPreview: taskPreviewOf(typeof t.task === "string" ? t.task : ""),
+      status: "pending" as const,
+      ...(typeof t.model === "string" && t.model !== "" ? { model: t.model, modelSource: "call-params" as const } : {}),
+      ...(typeof t.timeoutMs === "number" ? { timeoutMsExplicit: t.timeoutMs } : {}),
+      ...(typeof t.usageBudget === "number" ? { usageBudgetExplicit: t.usageBudget } : {}),
+    }));
+    return [
+      { id: "", kind: "parallel-root", agent: "parallel", taskPreview: "", status: "active", progress: { done: 0, total: tasks.length } },
+      ...children,
+    ];
   }
-  return new Text(text, 0, 0);
-}
-
-function renderSingleComponent(
-  opts: { agent: string; isError: boolean; stopReason?: string; errorMessage?: string; output: string; usage?: Usage; model?: string },
-  expanded: boolean,
-  theme: Theme,
-): Component {
-  const icon = opts.isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
-  const header = `${icon} ${theme.fg("toolTitle", theme.bold(opts.agent))}${opts.isError && opts.stopReason ? ` ${theme.fg("error", `[${opts.stopReason}]`)}` : ""}`;
-  const usageStr = opts.usage ? formatUsageStats(opts.usage, opts.model) : "";
-  if (expanded) {
-    const container = new Container();
-    container.addChild(new Text(header, 0, 0));
-    if (opts.isError && opts.errorMessage) container.addChild(new Text(theme.fg("error", `Error: ${opts.errorMessage}`), 0, 0));
-    container.addChild(new Spacer(1));
-    if (opts.output.trim()) container.addChild(new Markdown(opts.output.trim(), 0, 0, getMarkdownTheme()));
-    else container.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
-    if (usageStr) {
-      container.addChild(new Spacer(1));
-      container.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
-    }
-    return container;
-  }
-  const lines = opts.output.split("\n");
-  let text = header;
-  if (opts.isError && opts.errorMessage) text += `\n${theme.fg("error", `Error: ${opts.errorMessage}`)}`;
-  else if (lines.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
-  else {
-    text += `\n${lines.slice(0, COLLAPSED_ITEM_COUNT).map((l) => theme.fg("toolOutput", l)).join("\n")}`;
-    if (lines.length > COLLAPSED_ITEM_COUNT) text += `\n${theme.fg("muted", `... ${lines.length - COLLAPSED_ITEM_COUNT} more lines (Ctrl+O to expand)`)}`;
-  }
-  if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
-  return new Text(text, 0, 0);
-}
-
-function renderParallelComponent(results: ParallelChildResult[], expanded: boolean, theme: Theme): Component {
-  const successCount = results.filter((r) => !r.isError).length;
-  const status = `${successCount}/${results.length} tasks`;
-  const icon = successCount === results.length ? theme.fg("success", "✓") : theme.fg("warning", "◐");
-  const total = emptyUsage();
-  for (const r of results) {
-    total.input += r.details.usage.input;
-    total.output += r.details.usage.output;
-    total.cacheRead += r.details.usage.cacheRead;
-    total.cacheWrite += r.details.usage.cacheWrite;
-    total.cost += r.details.usage.cost;
-    total.turns += r.details.usage.turns;
-  }
-  const totalUsage = formatUsageStats(total);
-  if (expanded) {
-    const container = new Container();
-    container.addChild(new Text(`${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`, 0, 0));
-    for (const r of results) {
-      const rIcon = r.isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
-      container.addChild(new Spacer(1));
-      container.addChild(new Text(`${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${rIcon}`, 0, 0));
-      container.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", r.task), 0, 0));
-      if (r.text.trim()) container.addChild(new Markdown(r.text.trim(), 0, 0, getMarkdownTheme()));
-      const u = formatUsageStats(r.details.usage, r.details.model);
-      if (u) container.addChild(new Text(theme.fg("dim", u), 0, 0));
-    }
-    if (totalUsage) {
-      container.addChild(new Spacer(1));
-      container.addChild(new Text(theme.fg("dim", `Total: ${totalUsage}`), 0, 0));
-    }
-    return container;
-  }
-  let text = `${icon} ${theme.fg("toolTitle", theme.bold("parallel "))}${theme.fg("accent", status)}`;
-  for (const r of results) {
-    const rIcon = r.isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
-    const lines = r.text.split("\n");
-    text += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${rIcon}`;
-    if (lines.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
-    else text += `\n${lines.slice(0, 5).map((l) => theme.fg("toolOutput", l)).join("\n")}`;
-  }
-  if (totalUsage) text += `\n\n${theme.fg("dim", `Total: ${totalUsage}`)}`;
-  text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
-  return new Text(text, 0, 0);
+  return [
+    {
+      id: "",
+      kind: "single",
+      agent: typeof args.agent === "string" && args.agent !== "" ? args.agent : "...",
+      taskPreview: taskPreviewOf(typeof args.task === "string" ? args.task : ""),
+      status: "active",
+      ...(typeof args.model === "string" && args.model !== "" ? { model: args.model, modelSource: "call-params" as const } : {}),
+      ...(typeof args.timeoutMs === "number" ? { timeoutMsExplicit: args.timeoutMs } : {}),
+      ...(typeof args.usageBudget === "number" ? { usageBudgetExplicit: args.usageBudget } : {}),
+    },
+  ];
 }
 
 export default function (pi: ExtensionAPI) {
@@ -603,24 +524,26 @@ export default function (pi: ExtensionAPI) {
       // 本切片: onUpdate 透传 (M3-02 考察点 6 触发点/payload 见 single.ts).
       return runSingleAgent({ agent, task, model, thinking, cwd, timeoutMs, usageBudget: eff.budget, budgetAuto: eff.auto, ctx: _ctx, signal: _signal, onUpdate });
     },
-    // ISSUE-07: TUI 最小渲染 (M1-D001(9)) — renderCall 摘要 + renderResult 折叠/展开 + usage 统计.
-    renderCall(args, theme) {
+// ---- ISSUE-05: Inline Live Run Card — renderCall 接线 (调用侧快照 → 卡组件; 执行未开始不注册 spinner, 避免闲置动画). ----
+    renderCall(args, theme, context) {
       try {
-        return renderCallComponent(args as { agent?: unknown; task?: unknown; tasks?: unknown[] }, theme);
+        return renderRunCard(callFrameNodes(args as { agent?: unknown; task?: unknown; tasks?: unknown[]; model?: unknown; timeoutMs?: unknown; usageBudget?: unknown }), { density: "cozy", animate: false }, context as { invalidate?: () => void } | undefined);
       } catch (e) {
         // L44 (warn): renderCall 异常 → 记日志 + 最简占位 (不影响主流程/返回).
         logEvent({ level: "warn", event: "render.update.failed", errorMessage: (e as Error).message });
         return new Text("subagent call", 0, 0);
       }
     },
-    renderResult(result, { expanded }, theme) {
+    // ISSUE-05: renderResult 接线 — details → projectSlimDetailsToRunNodes (ISSUE-04) → 卡组件;
+    // 第 4 参 context (ToolRenderContext) 传给 spinner (未 settle 时 90ms invalidate 驱动重绘, settled 即停).
+    renderResult(result, { expanded }, theme, context) {
       try {
-        const details = result.details as { mode?: string; results?: ParallelChildResult[]; usage?: Usage; exitCode?: number; stopReason?: string; errorMessage?: string; model?: string } | undefined;
-        if (details?.mode === "parallel" && Array.isArray(details.results)) return renderParallelComponent(details.results, expanded, theme); // parallel 每任务分块
-        // single/默认 (final details = SingleDetails 无 agent; 流式 partial 同走 content 文本).
-        const text = (result.content[0] as { type?: string; text?: string } | undefined)?.type === "text" ? (result.content[0] as { text: string }).text : "(no output)";
-        const isError = result.isError === true || (typeof details?.exitCode === "number" && details.exitCode !== 0);
-        return renderSingleComponent({ agent: "subagent", isError, stopReason: details?.stopReason, errorMessage: details?.errorMessage, output: text, usage: details?.usage, model: details?.model }, expanded, theme);
+        const nodes = projectSlimDetailsToRunNodes({
+          toolCallId: (context as { toolCallId?: string } | undefined)?.toolCallId ?? "",
+          details: (result.details ?? {}) as ProjectionInput["details"],
+        });
+        if (!nodes || nodes.length === 0) return new Text(theme.fg("muted", "(no run data)"), 0, 0);
+        return renderRunCard(nodes, { density: "cozy", expanded }, context as { invalidate?: () => void } | undefined);
       } catch (e) {
         // L44 (warn): renderResult 异常 → 记日志 + 最简占位 (不影响主流程/返回).
         logEvent({ level: "warn", event: "render.update.failed", errorMessage: (e as Error).message });
