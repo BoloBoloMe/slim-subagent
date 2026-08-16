@@ -1,19 +1,16 @@
-// ISSUE-04 投影层 TDD (PRD §3 契约): projectSlimDetailsToRunNodes / projectArchivedRunNode / isAttention.
+// ISSUE-04 投影层 TDD (PRD §3 契约): projectSlimDetailsToRunNodes / isAttention.
 // TS-001: active single live 快照 → 单节点 (kind/status/model/modelSource/usage).
 // TS-002: parallel 6 child (2 未 scheduled) → pending/active/done 状态机 + root 进度.
 // TS-003: 冲突优先级 — final details.model 胜 callParams.model; details 缺省时退化 call-params.
-// TS-004: projectArchivedRunNode — run.json settle 补丁 → endedAtMsSource="run.json"; 无补丁 → session.jsonl mtime 近似.
 // 接缝 = 纯函数 (details + 调用侧快照 → RunNode), 不触发 spawn/执行管线.
+// (原 TS-004 archived 投影已随 projectArchivedRunNode 删除迁往 test/run-record.test.ts — 归档读取归 run-record 接缝.)
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
 import * as path from "node:path";
-import { makeTempHome, withHome } from "./helpers.ts";
-import { projectSlimDetailsToRunNodes, projectArchivedRunNode, isAttention } from "../projection.ts";
+import { projectSlimDetailsToRunNodes, isAttention } from "../projection.ts";
 import type { DisplayStatus, RunNode } from "../projection.ts";
 import { currentLogFile } from "../log.ts";
-import { sessionsRootDir } from "../single.ts";
 
 // ---- 测试数据构造 ----
 
@@ -203,79 +200,6 @@ test("TS-003 call-params model fallback when details lack model", () => {
   const n = nodes[0];
   assert.equal(n.model, "call-model");
   assert.equal(n.modelSource, "call-params");
-});
-
-// ---- TS-004: archived 投影 (run.json + session.jsonl mtime) ----
-
-test("TS-004 archived node marks run.json endedAtMs source", async () => {
-  await withHome(makeTempHome(), async () => {
-    const runDir = path.join(sessionsRootDir(), "run-arch-1");
-    fs.mkdirSync(path.join(runDir, "run-0"), { recursive: true });
-    fs.writeFileSync(
-      path.join(runDir, "run.json"),
-      JSON.stringify(
-        {
-          runId: "run-arch-1",
-          agent: "worker",
-          model: "arch-model",
-          cwd: "/tmp",
-          startedAt: "2026-01-01T00:00:00.000Z",
-          sessionFile: "run-0/session.jsonl",
-          endedAtMs: 999,
-          finalStatus: "done",
-          usage: { input: 7, output: 3, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
-        },
-        null,
-        2,
-      ),
-    );
-    fs.writeFileSync(path.join(runDir, "run-0", "session.jsonl"), "x\n");
-    const n = projectArchivedRunNode(runDir);
-    assert.ok(n, "archived projection must return a node");
-    assert.equal(n.kind, "single");
-    assert.equal(n.agent, "worker");
-    assert.equal(n.endedAtMs, 999);
-    assert.equal(n.endedAtMsSource, "run.json");
-    assert.equal(n.status, "done");
-    assert.equal(n.model, "arch-model");
-    assert.equal(n.modelSource, "run.json");
-    assert.equal(n.runId, "run-arch-1");
-  });
-});
-
-test("TS-004 archived node falls back to session mtime with mtime-approx", async () => {
-  await withHome(makeTempHome(), async () => {
-    const runDir = path.join(sessionsRootDir(), "run-arch-2");
-    fs.mkdirSync(path.join(runDir, "run-0"), { recursive: true });
-    // 无 settle 补丁 (无 endedAtMs/finalStatus): 首笔 run.json.
-    fs.writeFileSync(
-      path.join(runDir, "run.json"),
-      JSON.stringify({
-        runId: "run-arch-2",
-        agent: "explorer",
-        model: "m2",
-        cwd: "/tmp",
-        startedAt: "2026-01-02T00:00:00.000Z",
-        sessionFile: "run-0/session.jsonl",
-      }),
-    );
-    const sess = path.join(runDir, "run-0", "session.jsonl");
-    fs.writeFileSync(sess, "line1\nline2\n");
-    const mtime = 5_555_555_555;
-    fs.utimesSync(sess, new Date(mtime), new Date(mtime));
-    const n = projectArchivedRunNode(runDir)!;
-    assert.ok(n);
-    assert.equal(n.endedAtMsSource, "mtime-approx");
-    assert.ok(typeof n.endedAtMs === "number" && Math.abs(n.endedAtMs - mtime) < 1, "mtime 近似值");
-  });
-});
-
-test("TS-004 archived projection returns undefined on missing run.json", async () => {
-  await withHome(makeTempHome(), async () => {
-    const runDir = path.join(sessionsRootDir(), "run-arch-3");
-    fs.mkdirSync(runDir, { recursive: true });
-    assert.equal(projectArchivedRunNode(runDir), undefined);
-  });
 });
 
 // ---- isAttention 聚合 (PRD §4.1: attention = failed+timeout+budget+cancelled) ----

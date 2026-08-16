@@ -23,6 +23,8 @@ import type { AgentConfig } from "./agents.ts";
 import { runSingleAgent, makeRunId, sessionRootDir, sessionsRootDir, resolveEffectiveUsageBudget } from "./single.ts";
 import type { SingleDetails, StreamUpdateCallback, Usage } from "./single.ts";
 import { runResume, runSessionGc } from "./resume.ts";
+// 目录布局单一真相 (候选贰): parallel child run-<idx> 约定由 run-record.ts 拥有.
+import { childSessionDirOf } from "./run-record.ts";
 // ISSUE-01: 日志插桩 (仅加日志调用, 不改执行逻辑; 写失败静默吞, 见 log.ts).
 import { logEvent, taskPreviewOf, runLogGc } from "./log.ts";
 // ISSUE-08: 接线依赖 — viewer (store/组件/建批).
@@ -289,7 +291,7 @@ async function runParallelTasks(
   // + completedFlags 计数; 初始 1 次 + 每 child 完成后各 1 次. 不做 per-child 流式镜像 (最小版, 超出 :596-608 范围).
   const allResults: ParallelChildResult[] = tasks.map((t, i) => ({
     index: i, agent: typeof t.agent === "string" ? t.agent : "", task: typeof t.task === "string" ? t.task : "",
-    isError: false, text: "(running...)", details: { usage: emptyUsage(), runId: batchRunId, sessionDir: path.join(batchRoot, `run-${i}`), exitCode: -1 },
+    isError: false, text: "(running...)", details: { usage: emptyUsage(), runId: batchRunId, sessionDir: childSessionDirOf(batchRoot, i), exitCode: -1 },
   }));
   // ISSUE-03 (F1): per-child 进度预建行 (同 allResults 预建, pending → active 转换不丢行) —
   // childIndex/agent 固定, recentTools/recentOutput 空, usage 零值, isError false.
@@ -345,7 +347,7 @@ async function runParallelTasks(
       ctx, // M02 D001: 子口径 — 窗口查询 (替代旧 getContextUsage 父口径)
       // 调和 12: per-child 共享批次 runId + run-<idx> 子目录, 不写 per-child run.json.
       runId: batchRunId,
-      sessionDir: path.join(batchRoot, `run-${index}`),
+      sessionDir: childSessionDirOf(batchRoot, index),
       skipRunJson: true,
       onUpdate: (partial) => {
         // ISSUE-03 (F1): per-child 流式透传 — 取 child 单次 payload 的 progress 快照/results 槽位,

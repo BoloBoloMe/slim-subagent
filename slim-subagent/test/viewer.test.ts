@@ -188,6 +188,46 @@ test("backfill caps at 20 batches, survives missing files", () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+// 候选贰: parallel 归档回补 (原零覆盖面) — 经 run-record 接缝: 布局 run-<idx>, taskPreview 脱敏, 批次状态传播.
+test("backfill parallel batch: children redacted, layout run-<idx>, status propagated", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "viewer-backfill-par-"));
+  const dir = path.join(root, "run-20260813-000000-aabbcc");
+  fs.mkdirSync(path.join(dir, "run-0"), { recursive: true });
+  fs.mkdirSync(path.join(dir, "run-1"), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "run.json"),
+    JSON.stringify({
+      runId: "run-20260813-000000-aabbcc",
+      mode: "parallel",
+      startedAt: new Date(Date.UTC(2026, 7, 13)).toISOString(),
+      tasks: [
+        { agent: "worker", task: 'ship it with token=sk-topsecret123456\nsecond line', model: "m-a" },
+        { agent: "explorer", task: "survey" },
+      ],
+    }),
+  );
+  fs.writeFileSync(path.join(dir, "run-0", "session.jsonl"), "x\n");
+
+  const batches = backfillRecentBatches(root, 20);
+  assert.equal(batches.length, 1);
+  const b = batches[0];
+  assert.equal(b.mode, "parallel");
+  assert.equal(b.total, 2);
+  assert.equal(b.done, 2); // 批次无 settle 补丁 → finalStatus undefined → done 传播
+  const a0 = b.agents[0];
+  assert.equal(a0.id, "run-20260813-000000-aabbcc#0");
+  assert.equal(a0.sessionFile, path.join(dir, "run-0", "session.jsonl"));
+  assert.ok(typeof a0.endedAtMs === "number"); // child session mtime
+  assert.equal(a0.model, "m-a");
+  // 脱敏收口 (修复点: 原回补直渲原始 task)
+  assert.ok(!a0.taskPreview.includes("sk-topsecret123456"));
+  assert.ok(!a0.taskPreview.includes("\n"));
+  const a1 = b.agents[1];
+  assert.equal(a1.taskPreview, "survey");
+  assert.equal(a1.endedAtMs, undefined);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 // ---- TS-004: 内存 store ----
 
 test("viewer store upserts, orders ascending, removes", () => {

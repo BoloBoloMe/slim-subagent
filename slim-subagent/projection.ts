@@ -1,11 +1,10 @@
 // ISSUE-04 投影层 (PRD §3 观测数据契约) — details + 调用侧展示快照 → RunNode 数组.
 // 职责: 状态映射 (pending/active/终态, attention 聚合), modelSource 标注 (冲突时 final details 胜),
-// endedAtMsSource 三级来源 (details → run.json → session.jsonl mtime 近似), logCursor 关联 operational logs,
-// archived 投影 (run.json + session.jsonl). 纯函数, 不触发执行管线; 供 ISSUE-05 card / ISSUE-06 viewer 消费.
+// endedAtMsSource 三级来源 (details → run.json → session.jsonl mtime 近似), logCursor 关联 operational logs.
+// archived 读取 (run.json + session.jsonl) 已归 run-record.ts 单一接缝; 本层只管 live/final details → RunNode.
 // 参考: milestone-04/prototype/types.ts (RunNode 契约同源), milestone-02/DECISIONS.md D001/D004/D005/D008.
 
 import * as path from "node:path";
-import * as fs from "node:fs";
 import type { SingleDetails } from "./single.ts";
 import type { ParallelDetails } from "./index.ts";
 import { taskPreviewOf, currentLogFile } from "./log.ts";
@@ -123,28 +122,6 @@ function singleStatusOf(d: {
 }): DisplayStatus {
   if (d.endedAtMs === undefined) return "active";
   return terminalStatusOf(d);
-}
-
-// archived 状态: run.json.finalStatus = result.stopReason ?? (done/failed); 无补丁无失败证据 → done.
-function archivedStatusOf(finalStatus: unknown): DisplayStatus {
-  switch (finalStatus) {
-    case "timeout":
-      return "timeout";
-    case "usage_budget":
-      return "budget";
-    case "cancelled":
-      return "cancelled";
-    case "error":
-    case "failed":
-    case "aborted":
-      return "failed";
-    case "done":
-    case "stop":
-    case undefined:
-      return "done";
-    default:
-      return "done";
-  }
 }
 
 export function isAttention(status: DisplayStatus): boolean {
@@ -303,89 +280,5 @@ export function projectSlimDetailsToRunNodes(input: ProjectionInput): RunNode[] 
   return [projectSingle(d, input.callParams as ProjectionCallParams | undefined)];
 }
 
-// ---- archived 投影 (PRD §3 投影来源 3: run.json + session.jsonl). ----
-
-// single/resume: 读 <runDir>/run.json (首笔 + settle 补丁); endedAtMs 三级来源 (D005):
-// run.json.endedAtMs → "run.json"; 缺省则 session.jsonl mtime 近似 → "mtime-approx"; 再缺省不填.
-// parallel 批次 run.json: 仅产出 parallel-root 最小节点 (child 各别投影在 viewer 层, 本函数单节点面).
-// 任何读取/解析失败 → undefined (不抛).
-export function projectArchivedRunNode(runDir: string): RunNode | undefined {
-  let raw: string;
-  try {
-    raw = fs.readFileSync(path.join(runDir, "run.json"), "utf-8");
-  } catch {
-    return undefined;
-  }
-  let json: Record<string, unknown>;
-  try {
-    json = JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    return undefined;
-  }
-  const runId = typeof json.runId === "string" && json.runId !== "" ? json.runId : path.basename(runDir);
-  let endedAtMs: number | undefined;
-  let endedAtMsSource: "run.json" | "mtime-approx" | undefined;
-  if (typeof json.endedAtMs === "number") {
-    endedAtMs = json.endedAtMs;
-    endedAtMsSource = "run.json";
-  } else {
-    // 三级来源第 2 级: session.jsonl mtime 近似 (sessionFile 相对 runDir; 缺省 run-0/session.jsonl).
-    const candidates = [
-      typeof json.sessionFile === "string" ? json.sessionFile : null,
-      "run-0/session.jsonl",
-      "session.jsonl",
-    ].filter((s): s is string => s !== null);
-    for (const rel of candidates) {
-      try {
-        const st = fs.statSync(path.join(runDir, rel));
-        if (st.isFile()) {
-          endedAtMs = st.mtimeMs;
-          endedAtMsSource = "mtime-approx";
-          break;
-        }
-      } catch {
-        // 候选路径不达, 试下一个
-      }
-    }
-  }
-  const startedAtMs = typeof json.startedAt === "string" ? Date.parse(json.startedAt) : undefined;
-  const runJsonModel = typeof json.model === "string" && json.model !== "" ? json.model : undefined;
-  // archived modelSource: 仅 run.json 一手来源可能; 无则标注 unknown (不伪造).
-  const model = runJsonModel ?? "—";
-  const modelSource: "run.json" | "unknown" = runJsonModel !== undefined ? "run.json" : "unknown";
-  const usage = typeof json.usage === "object" && json.usage !== null ? (json.usage as SlimUsage) : undefined;
-  const base = {
-    logCursor: logCursorOf(),
-    ...(startedAtMs && Number.isFinite(startedAtMs) ? { startedAtMs } : {}),
-    ...(endedAtMs !== undefined && endedAtMsSource !== undefined ? { endedAtMs, endedAtMsSource } : {}),
-    ...(usage ? { usage } : {}),
-    model,
-    modelSource,
-  };
-  if (json.mode === "parallel") {
-    const tasks = Array.isArray(json.tasks) ? json.tasks : [];
-    return {
-      id: runId,
-      kind: "parallel-root",
-      parentId: undefined,
-      agent: "parallel",
-      taskPreview: "",
-      status: archivedStatusOf(json.finalStatus),
-      ...(runId ? { runId } : {}),
-      sessionDir: runDir,
-      ...base,
-      progress: { done: tasks.length, total: tasks.length },
-    };
-  }
-  return {
-    id: runId,
-    kind: "single",
-    parentId: undefined,
-    agent: typeof json.agent === "string" ? json.agent : "",
-    taskPreview: "",
-    status: archivedStatusOf(json.finalStatus),
-    ...(runId ? { runId } : {}),
-    sessionDir: runDir,
-    ...base,
-  };
-}
+// archived 投影已收敛: 归档运行读取 (run.json 解析/状态映射/脱敏/目录布局) 归 run-record.ts 单一接缝,
+// viewer.batchFromRunDir 为其生产消费方; 原 projectArchivedRunNode (生产零引用) 已删除 (删除测试: 复杂度集中而非移动).

@@ -1,10 +1,11 @@
 // slim-subagent single 执行管线 — ISSUE-02 TS-001/TS-003/TS-004 + ISSUE-03 TS-001~003 + ISSUE-04 TS-001~003 切片.
 // 本切片: onUpdate 流式接线 (M3-02 考察点 6 触发点/payload) + run.json tools 快照 (EXECUTION.md 调和 14).
-// 范围: 寻址 (M3-04 考察点 1) + spawn + 行解析 (M3-02 考察点 1/2) + close 结果构造 (M3-01 考察点 6, M3 §六) +
-// timeout 定时器/诊断载荷 (ISSUE-03) + 非 JSON 容忍/rawStdoutTail/stderrTail 128KB/closeError 优先序/finalCode 语义/空输出判定 (TS-003)
-// + 三阶段 drain (terminal stop/agent_settled → 1s SIGTERM → 3s SIGKILL, TS-004) + abort 取消 (TS-004) + session 落盘 (调和 1/3)
-// + 16MB 单行上限 failProtocol + turn_end/agent_end 聚合投影 (M3-01 考察点 5, EXECUTION.md 调和 9)
-// + usageBudget 触顶终止 (ISSUE-04: M2-D003 口径, M3-02 考察点 5 选项 B 挂点, 复用 timeout 三阶段终止管线).
+// 范围: 寻址 (M3-04 考察点 1) + spawn + 事件解释 (M3-02 考察点 1/2) + close 结果构造 (M3-01 考察点 6, M3 §六) +
+// 非 JSON 容忍/rawStdoutTail/stderrTail 128KB/closeError 优先序/finalCode 语义/空输出判定 (TS-003) + session 落盘 (调和 1/3).
+// 架构深化 (候选壹): runProcess 原 560 行单闭包拆解为薄编排 + 三个深模块 —
+//   line-protocol.ts (按 \n 切段 / 16MB 单行上限 failProtocol / turn_end/agent_end 聚合投影, M3-01 考察点 5, EXECUTION.md 调和 9),
+//   budget-monitor.ts (usageBudget 触顶判定, ISSUE-04: M2-D003 口径, M3-02 考察点 5 选项 B 挂点),
+//   termination.ts (timeout 定时器 / 三阶段终止 SIGINT→SIGTERM→SIGKILL / final drain 状态机 / abort 取消, TS-004 时序单一所有者).
 // 覆盖: M2-D002(a) 正常载荷, M2-D002(b) 中止载荷, M2-D006 (runId+sessionDir), M1-D005 (timeout 15min+诊断),
 // TS-003 错误与退出码, TS-004 终止时序 (M3-01 考察点 2/4), M1-D006 (token 上限运行中终止), M2-D003 (budget 口径).
 // ISSUE-05: parallel per-child 支持 — 共享批次 runId + sessionDir 覆盖 + skipRunJson (调和 12: per-child 不写 run.json).
@@ -21,6 +22,13 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { AgentConfig } from "./agents.ts";
 // ISSUE-01: 日志插桩 (仅加日志调用, 不改执行逻辑; 写失败静默吞, 见 log.ts).
 import { logEvent, taskPreviewOf } from "./log.ts";
+// 目录布局单一真相 (候选贰): run-0/session.jsonl 约定由 run-record.ts 拥有, 写侧读侧同源.
+import { SINGLE_SESSION_REL } from "./run-record.ts";
+// 候选壹 (拆解运行总管闭包): 行协议解析 / 预算监视 / 中止排空调度 各归深模块, runProcess 退为薄编排.
+import { createLineProtocol, formatProtocolOutputLimit } from "./line-protocol.ts";
+import type { ProtocolOutputLimit } from "./line-protocol.ts";
+import { createBudgetMonitor } from "./budget-monitor.ts";
+import { createTerminationSupervisor, FINAL_STOP_GRACE_MS } from "./termination.ts";
 
 // M3-02 考察点 2: message_end 事件 message 的解析所需最小面 (事件流来自 JSON.parse, 结构宽松).
 interface AgentMessageLike {
@@ -185,13 +193,6 @@ export function resolveEffectiveUsageBudget(
   return { budget: Math.max(1, Math.round(resolveModelWindow(ctx, model) * usageBudgetRatio())), auto: true };
 }
 const DEFAULT_TIMEOUT_MS = 900000;
-// M3-01 考察点 3: timeout 三阶段终止信号延迟常量.
-const TIMEOUT_SIGTERM_DELAY_MS = 1000;
-const TIMEOUT_SIGKILL_DELAY_MS = 4000;
-// M3-01 考察点 2/4: drain 三阶段常量 (terminal stop/agent_settled → 1s grace → SIGTERM → 3s SIGKILL) + 取消 SIGKILL 延迟.
-const FINAL_STOP_GRACE_MS = 1000;
-const HARD_KILL_MS = 3000;
-const CANCEL_SIGKILL_DELAY_MS = 3000;
 
 // M3-04 考察点 2: task 内联转 @file 的字符上限.
 // 导出: ISSUE-06 resume follow-up 组装复用 (resume.ts).
@@ -204,36 +205,6 @@ const EMPTY_OUTPUT_ERROR = "Subagent produced no output (possible model cold-sta
 const MAX_RECENT_TOOLS = 10;
 const MAX_RECENT_OUTPUT = 50;
 const MAX_TOOL_ARGS_PREVIEW = 200;
-
-// ---- M3-01 考察点 5 + EXECUTION.md 调和 9: 16MB 单行上限 (防御) + failProtocol + 聚合投影. ----
-// 单行超上限 → failProtocol: 记录 protocolError + error=formatProtocolOutputLimit + SIGTERM → HARD_KILL_MS → SIGKILL;
-// turn_end/agent_end 巨型聚合行 (并行图片 payload 撑爆单行) 由投影替换为保留 type/willRetry 的合成事件, 不误杀.
-// MAX_PENDING_LINE_BYTES 默认 16MB (可注入): 测试用小值 env 覆盖 (ISSUE-02 风险提示, 不真造 16MB 行).
-export const MAX_PENDING_LINE_BYTES = 16 * 1024 * 1024;
-// 注入缝: SLIM_SUBAGENT_PENDING_LINE_BYTES env 为正整数时覆盖行上限 (惰性读取, 测试在 execute 前设 env);
-// 非法/缺省回退 16MB. 与 PI_SUBAGENT_PI_BINARY/FAKE_PI_SCENARIO 同为测试注入 env 模式.
-function readPendingLineLimit(): number {
-  const fromEnv = Number(process.env.SLIM_SUBAGENT_PENDING_LINE_BYTES);
-  return Number.isInteger(fromEnv) && fromEnv > 0 ? fromEnv : MAX_PENDING_LINE_BYTES;
-}
-const MAX_PROTOCOL_DIAGNOSTIC_BYTES = 4096;
-const MAX_PROJECTED_JSON_DEPTH = 256;
-const MAX_CAPTURED_FIELD_LEN = 64;
-
-// 旧码 ProtocolOutputLimit 同形 (failProtocol 诊断载荷).
-interface ProtocolOutputLimit {
-  code: "protocol_output_limit";
-  stream: "stdout" | "stderr";
-  limitBytes: number;
-  observedBytes: number;
-  diagnosticPrefix: string;
-  diagnosticTail: string;
-}
-
-// 旧码 formatProtocolOutputLimit 原文 (failProtocol 报错形态).
-function formatProtocolOutputLimit(limit: ProtocolOutputLimit): string {
-  return `${limit.code}: child ${limit.stream} line exceeded ${limit.limitBytes} bytes (observed at least ${limit.observedBytes} bytes without a newline).`;
-}
 
 // 有界尾部缓冲: 只保留最近 limitBytes 字节 (供失败诊断; 按字符切割不拆多字节字符).
 function makeBoundedTail(limitBytes: number): { push(text: string): void; text(): string } {
@@ -279,7 +250,7 @@ export function sessionRootDir(runId: string): string {
 
 function sessionPaths(runId: string): { sessionDir: string; sessionFile: string } {
   const sessionDir = sessionRootDir(runId);
-  return { sessionDir, sessionFile: path.join(sessionDir, "run-0", "session.jsonl") };
+  return { sessionDir, sessionFile: path.join(sessionDir, SINGLE_SESSION_REL) };
 }
 
 // ISSUE-02 #2: run.json {runId, agent, model?, thinking?, cwd, startedAt, sessionFile} (原子写: 同目录 tmp + rename).
@@ -323,7 +294,7 @@ function writeRunJson(
     // EXECUTION.md 调和 14: tools 快照 (agent 定义解析后的工具面, resume spawn 按快照重建 --tools);
     // 无 tools 字段 = 全工具 (重建时不加 --tools, 对齐 agent 定义缺 tools 行为) — agent 无 tools 时省略字段.
     ...(data.tools && data.tools.length > 0 ? { tools: data.tools } : {}),
-    sessionFile: "run-0/session.jsonl",
+    sessionFile: SINGLE_SESSION_REL,
   };
   const target = path.join(sessionDir, "run.json");
   const tmp = path.join(sessionDir, "run.json.tmp");
@@ -516,234 +487,6 @@ function getFinalOutput(messages: AgentMessageLike[]): string {
   return "";
 }
 
-// M3-01 考察点 3: trySignalChild — 进程可能已退出, kill 抛错时 catch 返回 false.
-function trySignalChild(proc: ReturnType<typeof spawn>, signal: NodeJS.Signals): boolean {
-  try {
-    return proc.kill(signal);
-  } catch {
-    return false;
-  }
-}
-
-// ---- M3-01 考察点 5: turn_end/agent_end 巨型聚合行投影 (旧码 PI_AGGREGATE_EVENT_PROJECTOR 移植). ----
-// pi JSON 模式先发粒度事件再发聚合 turn_end/agent_end (重复载荷); 并行图片读取可使单条聚合记录超行上限,
-// 而每个粒度事件都合法. 只把语法合法且冗余的记录替换为运行方消费的生命周期字段 (type/willRetry), 不误杀.
-// 旧码为完整 JSON tokenizer; slim 移植同构状态机, 数字语法稍宽松 (对防御目的无影响: 投影输出由本函数构造, 恒合法).
-interface AggregateProjection {
-  push(text: string): boolean;
-  finish(): string | undefined;
-}
-
-type ProjContainer = { kind: "object" | "array"; state: string; key?: string };
-
-function createAggregateProjection(): AggregateProjection {
-  // 输入已是 string (行读取器已 toString), 无需 TextDecoder 再解码.
-  const stack: ProjContainer[] = [];
-  let rootClosed = false;
-  let inString = false;
-  let stringRole: "key" | "value" | undefined;
-  let stringValue = "";
-  let captureString = false;
-  let escaped = false;
-  let unicodeDigits = 0;
-  let unicodeValue = "";
-  let literal: { expected: string; index: number; value: boolean | null } | undefined;
-  let inNumber = false;
-  let valid = true;
-  let eventType: string | undefined;
-  let willRetry: boolean | undefined;
-
-  const parent = (): ProjContainer | undefined => stack[stack.length - 1];
-
-  // 顶层 type (字符串) / willRetry (布尔) 捕获; 嵌套层不捕获 (旧码 isTopLevelField 同款).
-  const completeValue = (value?: string | boolean | null): void => {
-    const c = parent();
-    if (!c) {
-      rootClosed = true;
-      return;
-    }
-    if (c.kind === "object") {
-      if (stack.length === 1 && c.key === "type" && typeof value === "string") eventType = value;
-      if (stack.length === 1 && c.key === "willRetry" && typeof value === "boolean") willRetry = value;
-      c.key = undefined;
-      c.state = "comma-or-end";
-    } else c.state = "comma-or-end";
-  };
-
-  const startValue = (char: string): boolean => {
-    const c = parent();
-    const key = c?.kind === "object" ? c.key : undefined;
-    if (char === "{" || char === "[") {
-      if (stack.length >= MAX_PROJECTED_JSON_DEPTH) return false;
-      stack.push(char === "{" ? { kind: "object", state: "key-or-end" } : { kind: "array", state: "value-or-end" });
-      return true;
-    }
-    if (char === '"') {
-      inString = true;
-      stringRole = "value";
-      stringValue = "";
-      captureString = key === "type" && stack.length === 1;
-      escaped = false;
-      unicodeDigits = 0;
-      return true;
-    }
-    if (char === "t") literal = { expected: "true", index: 1, value: true };
-    else if (char === "f") literal = { expected: "false", index: 1, value: false };
-    else if (char === "n") literal = { expected: "null", index: 1, value: null };
-    else if (char === "-" || (char >= "0" && char <= "9")) inNumber = true;
-    else return false;
-    return true;
-  };
-
-  const closeContainer = (): boolean => {
-    stack.pop();
-    completeValue();
-    return true;
-  };
-
-  const openString = (): boolean => {
-    const c = parent();
-    if (!c || c.kind !== "object") return false;
-    inString = true;
-    stringRole = "key";
-    stringValue = "";
-    // 旧码同款: key 字符串仅在顶层累积 (嵌套 key 不消费, 空值无害); captureString 须在此显式重置,
-    // 否则沿用上一值字符串的 capture 状态, 顶层 key 不累积 → type/willRetry 永远捕获不到.
-    captureString = stack.length === 1;
-    escaped = false;
-    unicodeDigits = 0;
-    return true;
-  };
-
-  const processChar = (char: string): boolean => {
-    if (inString) {
-      if (unicodeDigits > 0) {
-        if (!/[0-9a-fA-F]/.test(char)) return false;
-        unicodeValue += char;
-        unicodeDigits--;
-        if (unicodeDigits === 0 && captureString) {
-          if (stringValue.length >= MAX_CAPTURED_FIELD_LEN) return false;
-          stringValue += String.fromCharCode(Number.parseInt(unicodeValue, 16));
-        }
-        return true;
-      }
-      if (escaped) {
-        escaped = false;
-        if (char === "u") {
-          unicodeDigits = 4;
-          unicodeValue = "";
-          return true;
-        }
-        if (!'"\\/bfnrt'.includes(char)) return false;
-        if (captureString) {
-          if (stringValue.length >= MAX_CAPTURED_FIELD_LEN) return false;
-          stringValue += ({ b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" } as Record<string, string>)[char] ?? char;
-        }
-        return true;
-      }
-      if (char === "\\") {
-        escaped = true;
-        return true;
-      }
-      if (char === '"') {
-        inString = false;
-        if (stringRole === "key") {
-          const c = parent();
-          if (!c || c.kind !== "object") return false;
-          c.key = stringValue;
-          c.state = "colon";
-        } else completeValue(captureString ? stringValue : undefined);
-        return true;
-      }
-      if (char.charCodeAt(0) < 0x20) return false;
-      if (captureString) {
-        if (stringValue.length >= MAX_CAPTURED_FIELD_LEN) return false;
-        stringValue += char;
-      }
-      return true;
-    }
-    if (literal) {
-      if (char !== literal.expected[literal.index]) return false;
-      literal.index++;
-      if (literal.index === literal.expected.length) {
-        const v = literal.value;
-        literal = undefined;
-        completeValue(v);
-      }
-      return true;
-    }
-    if (inNumber) {
-      if (char === "," || char === "}" || char === "]" || char === " " || char === "\t" || char === "\r" || char === "\n") {
-        inNumber = false;
-        completeValue();
-        return processChar(char);
-      }
-      if (!/[0-9eE.+-]/.test(char)) return false;
-      return true;
-    }
-    if (char === " " || char === "\t" || char === "\r" || char === "\n") return true;
-    const c = parent();
-    if (!c) return rootClosed ? false : startValue(char);
-    if (c.kind === "object") {
-      if (c.state === "key-or-end" || c.state === "key") {
-        if (char === "}" && c.state === "key-or-end") return closeContainer();
-        if (char !== '"') return false;
-        return openString();
-      }
-      if (c.state === "colon") {
-        if (char !== ":") return false;
-        c.state = "value";
-        return true;
-      }
-      if (c.state === "value") return startValue(char);
-      if (char === ",") {
-        c.state = "key";
-        return true;
-      }
-      if (char === "}") return closeContainer();
-      return false;
-    }
-    if (c.state === "value-or-end" || c.state === "value") {
-      if (char === "]" && c.state === "value-or-end") return closeContainer();
-      return startValue(char);
-    }
-    if (char === ",") {
-      c.state = "value";
-      return true;
-    }
-    if (char === "]") return closeContainer();
-    return false;
-  };
-
-  const processText = (text: string): boolean => {
-    for (const char of text) if (!processChar(char)) return false;
-    return true;
-  };
-
-  return {
-    push(text: string) {
-      if (!valid) return false;
-      valid = processText(text);
-      return valid;
-    },
-    finish() {
-      if (inNumber) {
-        inNumber = false;
-        completeValue();
-      }
-      if (!valid || inString || literal || stack.length !== 0 || !rootClosed) return undefined;
-      if (eventType === "turn_end") return '{"type":"turn_end"}';
-      if (eventType === "agent_end" && typeof willRetry === "boolean") return JSON.stringify({ type: "agent_end", willRetry });
-      return undefined;
-    },
-  };
-}
-
-// 旧码 PI_AGGREGATE_EVENT_PROJECTOR.accepts 同款: 只接受 turn_end/agent_end 前缀的巨型聚合行.
-function acceptsAggregatePrefix(prefix: string): boolean {
-  return prefix.startsWith('{"type":"turn_end"') || prefix.startsWith('{"type":"agent_end"');
-}
-
 export async function runProcess(
   agent: AgentConfig,
   task: string,
@@ -776,118 +519,50 @@ export async function runProcess(
   });
 
   return await new Promise<SingleResult>((resolve) => {
-    let buffer = "";
-    // M3-01 考察点 5: 行上限本次运行固定快照 (env 可注入小值, 测试用; 默认 16MB).
-    const maxPendingLineBytes = readPendingLineLimit();
-    let pendingLineBytes = 0;
     let assistantError: string | undefined;
     let settled = false;
     // M3-01 考察点 5: 非 JSON stdout 行尾部缓冲 + stderr 尾部缓冲 (各 128KB, 失败诊断用).
     const rawStdoutTail = makeBoundedTail(MAX_TAIL_BYTES);
     const stderrTail = makeBoundedTail(MAX_TAIL_BYTES);
-    // ISSUE-03: timeout 定时器句柄.
-    let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
-    let sigtermTimer: ReturnType<typeof setTimeout> | undefined;
-    let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
-    // M3-01 考察点 5: failProtocol 终止定时器 + 行读取状态 (limitExceeded 后停止处理 stdout).
-    let protocolHardKillTimer: ReturnType<typeof setTimeout> | undefined;
-    let limitExceeded = false;
-    let projecting = false;
-    let projection: AggregateProjection | undefined;
-    let projectedBytes = 0;
-    let projectedPrefix = "";
-    let projectedTail = "";
-
+    // M3-01 考察点 2: 运行态 (事件解释侧所有; 调度器经回调查询, 不拥有判定).
+    let childExited = false;
+    let cleanTerminalAssistantStopReceived = false;
+    let agentSettledReceived = false;
     // ISSUE-07 deferred (a): tool_execution 进度累积 (考察点 1b) — start 记 currentTool, end 落 recentTools (≤10 有界); 两者触发 onUpdate (考察点 6).
     const recentTools: { tool: string; args: string; endMs: number }[] = [];
     const recentOutput: string[] = [];
     let currentTool: string | undefined;
     let currentToolArgs = "";
-
-    const clearTimeoutTimers = () => {
-      if (timeoutTimer) { clearTimeout(timeoutTimer); timeoutTimer = undefined; }
-      if (sigtermTimer) { clearTimeout(sigtermTimer); sigtermTimer = undefined; }
-      if (sigkillTimer) { clearTimeout(sigkillTimer); sigkillTimer = undefined; }
-    };
-
-    // M3-01 考察点 2: drain 状态机闭包变量 (childExited/lifecycleFinished/processClosed → settled 等价).
-    let childExited = false;
-    let forcedTerminationSignal = false;
-    let cleanTerminalAssistantStopReceived = false;
-    let agentSettledReceived = false;
-    let finalDrainTimer: ReturnType<typeof setTimeout> | undefined;
-    let finalHardKillTimer: ReturnType<typeof setTimeout> | undefined;
-    // M3-01 考察点 4: 取消监听移除句柄 (finish/settle 时 removeEventListener).
-    let removeAbortListener: (() => void) | undefined;
     // ISSUE-02 L11-L24 采样状态 (高频防护: 仅首/尾或首次超阈值记, 防刷盘).
     let loggedInitialUpdate = false; // L11: emitUpdate 初始采样已记
     let pendingFinalUpdate = false; // L11: 下一次 emitUpdate 为 settle 最终次
     let nonJsonLineCount = 0; // L12: 非 JSON 行计数
     let nonJsonWarned = false; // L12: 首次 >3 已记
     let assistantMessageCount = 0; // L15: assistant message_end 采样
-    let budgetWarned80 = false; // L16: 预算 80% 提示已记
 
-    const clearFinalDrainTimers = () => {
-      if (finalDrainTimer) { clearTimeout(finalDrainTimer); finalDrainTimer = undefined; }
-      if (finalHardKillTimer) { clearTimeout(finalHardKillTimer); finalHardKillTimer = undefined; }
-    };
-
-    // M3-01 考察点 2 逻辑步骤 (M4 直接照做): 1s grace → SIGTERM → 3s SIGKILL; 守卫防重复启动;
-    // 两 timer 均 unref (不独占事件循环). 与 timeout 三阶段管线 (考察点 3) 独立共存:
-    // timeout 先触发时 drain 定时器照常存在, 但 close 时两套定时器都清理, 不互相污染.
-    const startFinalDrain = () => {
-      if (childExited || settled || finalDrainTimer) return;
-      // L22 (info): final drain 启动 (terminal stop/agent_settled 后 1s grace 强制收尾).
-      logEvent({ level: "info", event: "final_drain.start", mode: "single", agent: result.agent, data: { graceMs: FINAL_STOP_GRACE_MS } });
-      finalDrainTimer = setTimeout(() => {
-        if (settled) return;
-        const termSent = signalChild("SIGTERM");
-        if (!termSent) return;
-        forcedTerminationSignal = true;
-        // L23 (warn): drain 强制阶段 — SIGTERM 置真处.
-        logEvent({ level: "warn", event: "final_drain.forced", mode: "single", agent: result.agent, data: { signal: "SIGTERM" } });
+    // 候选壹: 4 套定时器 (timeout / 三阶段终止 / final drain / protocol 强杀 + 取消监听) 归中止排空调度器单一所有者.
+    const supervisor = createTerminationSupervisor({
+      proc,
+      isSettled: () => settled,
+      isChildExited: () => childExited,
+      onTimeout: () => {
+        if (result.budgetExceeded) return; // ISSUE-04: 先触发者胜 (budget 已触顶, timeout 不再发)
+        result.timedOut = true;
+        // L19 (error): timeout 触发 (timedOut 置真处).
+        logEvent({ level: "error", event: "timeout.fired", mode: "single", agent: result.agent, timeoutMsExplicit: timeoutMs, data: { timeoutMs: effectiveTimeout } });
+        result.error = `Subagent timed out after ${effectiveTimeout}ms.`;
+        supervisor.startAbortSequence();
+      },
+      onDrainForced: () => {
         if (!cleanTerminalAssistantStopReceived && !agentSettledReceived && !assistantError) {
           result.error = result.error ?? `Subagent process did not exit within ${FINAL_STOP_GRACE_MS}ms after its terminal event. Forcing termination.`;
         }
-        finalHardKillTimer = setTimeout(() => {
-          if (settled) return;
-          forcedTerminationSignal = signalChild("SIGKILL") || forcedTerminationSignal;
-          // L23 (warn): drain 强制阶段 — SIGKILL 处.
-          logEvent({ level: "warn", event: "final_drain.forced", mode: "single", agent: result.agent, data: { signal: "SIGKILL" } });
-        }, HARD_KILL_MS);
-        finalHardKillTimer.unref?.();
-      }, FINAL_STOP_GRACE_MS);
-      finalDrainTimer.unref?.();
-    };
-
-    // M3-01 考察点 3 + ISSUE-04: 三阶段终止序列共用 (timeout / usageBudget 触顶同款):
-    // SIGINT @0ms → SIGTERM @+1000ms → SIGKILL @+4000ms (子进程有机会优雅收尾, 逐步升级).
-    // L21 (warn): trySignalChild 包装 — 每次发信号记日志 (ok=返回), 行为等价.
-    const signalChild = (sig: NodeJS.Signals): boolean => {
-      const ok = trySignalChild(proc, sig);
-      logEvent({ level: "warn", event: "process.signal.sent", mode: "single", agent: result.agent, data: { signal: sig, ok } });
-      return ok;
-    };
-
-    const startAbortSequence = () => {
-      signalChild("SIGINT"); // 阶段 1: 立即 SIGINT
-      sigtermTimer = setTimeout(() => { // 阶段 2: +1000ms → SIGTERM
-        signalChild("SIGTERM");
-      }, TIMEOUT_SIGTERM_DELAY_MS);
-      sigkillTimer = setTimeout(() => { // 阶段 3: +4000ms → SIGKILL
-        signalChild("SIGKILL");
-      }, TIMEOUT_SIGKILL_DELAY_MS);
-    };
+      },
+      logCtx: { mode: "single", agent: result.agent },
+    });
 
     // M3-01 考察点 3: timeout 定时器 — 父进程定时, 子进程无感知.
-    timeoutTimer = setTimeout(() => {
-      if (result.budgetExceeded) return; // ISSUE-04: 先触发者胜 (budget 已触顶, timeout 不再发)
-      result.timedOut = true;
-      // L19 (error): timeout 触发 (timedOut 置真处).
-      logEvent({ level: "error", event: "timeout.fired", mode: "single", agent: result.agent, timeoutMsExplicit: timeoutMs, data: { timeoutMs: effectiveTimeout } });
-      result.error = `Subagent timed out after ${effectiveTimeout}ms.`;
-      startAbortSequence();
-    }, effectiveTimeout);
+    supervisor.armTimeout(effectiveTimeout);
     // L18 (info/debug): timeout 定时器武装 — 显式 timeoutMs 记 info, 自动缺省记 debug.
     logEvent({
       level: timeoutMs !== undefined ? "info" : "debug",
@@ -896,6 +571,24 @@ export async function runProcess(
       agent: result.agent,
       timeoutMsExplicit: timeoutMs,
       data: { timeoutMs: effectiveTimeout, explicit: timeoutMs !== undefined },
+    });
+
+    // 候选壹: 预算监视出 processLine — usage 累加后同步 observe; 触顶/80% 判定与守卫 (已触顶/已 timeout/
+    // terminal stop 已收) 归监视器; 触顶动作 (置标记 + 三阶段终止) 经 onExceeded 回到本闭包.
+    const budgetMonitor = createBudgetMonitor({
+      budget: usageBudget,
+      mayAbort: () => !result.timedOut && !cleanTerminalAssistantStopReceived,
+      onExceeded: (used) => {
+        // L17 (error): budget 触顶 — 记 error 后照旧启动终止序列.
+        logEvent({ level: "error", event: "usage_budget.abort", mode: "single", agent: result.agent, data: { used, budget: usageBudget, budgetAuto } });
+        result.budgetExceeded = true;
+        result.error = `Usage budget exhausted: reported tokens ${used} reached limit ${usageBudget}.`;
+        supervisor.startAbortSequence();
+      },
+      onWarn80: (used) => {
+        // L16 (warn): 预算 80% 提示 — 每个 run 只记一次 (监视器保证).
+        logEvent({ level: "warn", event: "usage_budget.warn_80pct", mode: "single", agent: result.agent, data: { used, budget: usageBudget, budgetAuto } });
+      },
     });
 
     // M3-02 考察点 6: 流式更新 emit — 触发点 spawn 初始 + tool_execution_start/end + message_end + tool_result_end + close 最终; 官方口径直接带 live result/messages.
@@ -997,23 +690,9 @@ export async function runProcess(
             },
           });
         }
-        // ISSUE-04 (M3-02 考察点 5 选项 B): usage 累加后立即比对 (挂点: 累加之后 fireUpdate 之前, 同步无异步间隙),
-        // used = input + output + cacheWrite (M2-D003, cacheRead 不计), used >= usageBudget 触顶 → 复用 timeout 终止管线.
-        // 守卫: 已触顶/已 timeout 不重发; terminal stop 已收到后不再触发 (结果已干净完成, 风险提示 2 选守卫).
-        if (usageBudget !== undefined && !result.budgetExceeded && !result.timedOut && !cleanTerminalAssistantStopReceived) {
-          const used = result.usage.input + result.usage.output + result.usage.cacheWrite;
-          if (used >= usageBudget) {
-            // L17 (error): budget 触顶 — 记 error 后照旧启动终止序列.
-            logEvent({ level: "error", event: "usage_budget.abort", mode: "single", agent: result.agent, data: { used, budget: usageBudget, budgetAuto } });
-            result.budgetExceeded = true;
-            result.error = `Usage budget exhausted: reported tokens ${used} reached limit ${usageBudget}.`;
-            startAbortSequence();
-          } else if (used >= 0.8 * usageBudget && !budgetWarned80) {
-            // L16 (warn): 预算 80% 提示 — 每个 run 只记一次 (采样防刷).
-            budgetWarned80 = true;
-            logEvent({ level: "warn", event: "usage_budget.warn_80pct", mode: "single", agent: result.agent, data: { used, budget: usageBudget, budgetAuto } });
-          }
-        }
+        // ISSUE-04 (M3-02 考察点 5 选项 B): usage 累加后立即比对 (挂点: 累加之后 fireUpdate 之前, 同步无异步间隙);
+        // used = input + output + cacheWrite (M2-D003, cacheRead 不计); 判定/守卫归预算监视器.
+        budgetMonitor.observe(result.usage);
         if (msg.model && !result.model) result.model = msg.model; // 首个 assistant 消息
         // EXECUTION.md 调和 11: 中止标记优先 — 未触 timeout/usageBudget 中止才写模型级 stopReason (超时/触顶后到达的 message_end 不覆写).
         if (!result.timedOut && !result.budgetExceeded && msg.stopReason) result.stopReason = msg.stopReason;
@@ -1031,7 +710,7 @@ export async function runProcess(
         if (msg.stopReason === "stop" && toolCalls.length === 0) {
           if (!msg.errorMessage && hasTextContent(msg)) assistantError = undefined;
           cleanTerminalAssistantStopReceived ||= !msg.errorMessage;
-          startFinalDrain();
+          supervisor.startFinalDrain();
         }
         emitUpdate(); // assistant message_end 后 1 次 (usage 累加之后, 考察点 6; 官方示例同序)
       }
@@ -1043,119 +722,35 @@ export async function runProcess(
       // agent_end + willRetry → cancel-drain (slim 无 fallback, 防御保留, 不误杀已排定 drain).
       if (evt?.type === "agent_settled") {
         agentSettledReceived = true;
-        startFinalDrain();
+        supervisor.startFinalDrain();
       } else if (evt?.type === "agent_end" && evt.willRetry === true) {
-        clearFinalDrainTimers();
+        supervisor.cancelFinalDrain();
       }
     };
 
-    // ---- M3-01 考察点 5: 行读取 (简化版 createBoundedLineReader) — 残段字节计数, 单行超限 → 投影或 fail. ----
-    // failProtocol (旧码 execution.ts 同款): 记录 protocolError + error=formatProtocolOutputLimit;
-    // 子进程未退 → 立即 SIGTERM, HARD_KILL_MS 后 SIGKILL (与 drain 同常量).
-    const failProtocol = (observedBytes: number, prefix: string, tail: string): void => {
-      if (limitExceeded) return;
-      limitExceeded = true;
-      result.protocolError = {
-        code: "protocol_output_limit",
-        stream: "stdout",
-        limitBytes: maxPendingLineBytes,
-        observedBytes,
-        diagnosticPrefix: prefix,
-        diagnosticTail: tail,
-      };
-      result.error = formatProtocolOutputLimit(result.protocolError);
-      // L13 (error): 协议输出超限 — failProtocol 记录 (stream/limitBytes/observedBytes).
-      logEvent({ level: "error", event: "protocol.output_limit", mode: "single", agent: result.agent, data: { stream: "stdout", limitBytes: maxPendingLineBytes, observedBytes } });
-      if (!childExited) {
-        signalChild("SIGTERM");
-        protocolHardKillTimer = setTimeout(() => {
-          if (!childExited) signalChild("SIGKILL");
-        }, HARD_KILL_MS);
-        protocolHardKillTimer.unref?.();
-      }
-    };
-
-    const diagnosticTail = (prior: string, segment: string): string =>
-      (prior + segment).slice(-MAX_PROTOCOL_DIAGNOSTIC_BYTES);
-
-    // 追加一段 (行内容/残段): 超限 → 前缀命中聚合事件则进投影 (合法才合成, 否则 fail), 其余直接 fail;
-    // 返回 false 表示已 failProtocol (调用方停止处理).
-    const appendSegment = (segment: string): boolean => {
-      if (segment.length === 0) return true;
-      if (projecting) {
-        projectedBytes += Buffer.byteLength(segment);
-        projectedTail = diagnosticTail(projectedTail, segment);
-        if (projection?.push(segment) !== true) {
-          failProtocol(projectedBytes, projectedPrefix, projectedTail);
-          return false;
-        }
-        return true;
-      }
-      const observedBytes = pendingLineBytes + Buffer.byteLength(segment);
-      if (observedBytes > maxPendingLineBytes) {
-        const prior = buffer;
-        const prefix = (prior + segment).slice(0, MAX_PROTOCOL_DIAGNOSTIC_BYTES);
-        const tail = diagnosticTail(prior, segment);
-        if (acceptsAggregatePrefix(prefix)) {
-          const candidate = createAggregateProjection();
-          if (!candidate.push(prior) || !candidate.push(segment)) {
-            failProtocol(observedBytes, prefix, tail);
-            return false;
-          }
-          buffer = "";
-          pendingLineBytes = 0;
-          projecting = true;
-          projection = candidate;
-          projectedPrefix = prefix;
-          projectedTail = tail;
-          projectedBytes = observedBytes;
-          return true;
-        }
-        failProtocol(observedBytes, prefix, tail);
-        return false;
-      }
-      buffer += segment;
-      pendingLineBytes = observedBytes;
-      return true;
-    };
-
-    // 行收束: 投影行 → finish 合成事件 (非法 → fail); 普通行 → processLine.
-    const finishLine = (): void => {
-      if (projecting) {
-        const projected = projection?.finish();
-        if (projected === undefined) {
-          // L14 (debug): 投影失败 — 先记 debug 再 failProtocol (L14→L13 序列).
-          logEvent({ level: "debug", event: "aggregate.projection", mode: "single", agent: result.agent, data: { projectedBytes, ok: false } });
-          failProtocol(projectedBytes, projectedPrefix, projectedTail);
-        } else {
-          logEvent({ level: "debug", event: "aggregate.projection", mode: "single", agent: result.agent, data: { projectedBytes, ok: true } });
-          processLine(projected);
-        }
-      } else if (pendingLineBytes > 0) {
-        processLine(buffer);
-      }
-      buffer = "";
-      pendingLineBytes = 0;
-      projecting = false;
-      projection = undefined;
-      projectedPrefix = "";
-      projectedTail = "";
-      projectedBytes = 0;
-    };
+    // 候选壹: 行协议解析归独立模块 — 按 \n 切段 / 单行上限防御 / 聚合投影 / onLine 抛出;
+    // 超限于 onLimit 报诊断 (L13 已在模块内记录), failProtocol 记录 + 强杀回本闭包 (M3-01 考察点 5).
+    const lineProtocol = createLineProtocol(
+      { logCtx: { mode: "single", agent: result.agent } },
+      {
+        onLine: (line) => processLine(line),
+        onLimit: (diag) => {
+          result.protocolError = {
+            code: "protocol_output_limit",
+            stream: "stdout",
+            limitBytes: diag.limitBytes,
+            observedBytes: diag.observedBytes,
+            diagnosticPrefix: diag.prefix,
+            diagnosticTail: diag.tail,
+          };
+          result.error = formatProtocolOutputLimit(result.protocolError);
+          supervisor.protocolKill();
+        },
+      },
+    );
 
     proc.stdout.on("data", (data: Buffer) => {
-      if (limitExceeded) return;
-      const text = data.toString();
-      // 按 \n 逐段: 每段 (行内容) 先 append (超限检查/投影喂入), 再 finishLine (行收束).
-      let start = 0;
-      for (let i = 0; i < text.length; i++) {
-        if (text[i] !== "\n") continue;
-        if (!appendSegment(text.slice(start, i))) return;
-        finishLine();
-        if (limitExceeded) return;
-        start = i + 1;
-      }
-      appendSegment(text.slice(start));
+      lineProtocol.push(data.toString());
     });
 
     proc.stderr.on("data", (data: Buffer) => {
@@ -1166,22 +761,9 @@ export async function runProcess(
       result.endedAtMs = Date.now(); // ISSUE-02 (M02 D005): settle 收束时刻 — 供 details.endedAtMs 与 run.json settle 补丁同源
       if (settled) return;
       settled = true;
-      clearTimeoutTimers(); // ISSUE-03: 进程自然退出时清理所有定时器.
-      clearFinalDrainTimers(); // TS-004: drain 定时器同清 (exit/close 均收束).
-      if (protocolHardKillTimer) {
-        clearTimeout(protocolHardKillTimer);
-        protocolHardKillTimer = undefined;
-      }
-      removeAbortListener?.(); // 取消监听清理 (考察点 4: finish 时 removeEventListener).
-      // M3-01 考察点 5: 残段 flush 仅在未超限时进行 — 超限后不再处理 stdout;
-      // 投影残段在 close 收束 (finishLine): 投影合法 → 合成事件, 非法 → failProtocol (旧码 reader.end() 同款).
-      if (!limitExceeded) {
-        if (projecting) {
-          finishLine();
-        } else if (buffer.trim()) {
-          processLine(buffer);
-        }
-      }
+      supervisor.dispose(); // 全部定时器 + 取消监听一处清 (exit/close 均收束)
+      // M3-01 考察点 5: 残段 flush 仅在未超限时进行 (模块内守卫) — 投影残段合法 → 合成事件, 非法 → onLimit.
+      lineProtocol.end();
 
       // M3-01 考察点 6: closeError 优先序 (result.error 前置预设 → assistantError → signal → rawStdout → stderr)
       // 与 finalCode 语义 (M4 直接照做): forcedDrainAfterFinalSuccess 优先归 0;
@@ -1190,7 +772,7 @@ export async function runProcess(
       // terminal stop/agent_settled 已收到且无 closeError → 强杀收尾不报 "terminated by signal" 错误, 退出码归 0.
       let closeError = result.error ?? assistantError;
       const forcedDrainAfterFinalSuccess =
-        Boolean(forcedTerminationSignal || signal) &&
+        Boolean(supervisor.forcedTerminationSignal || signal) &&
         (cleanTerminalAssistantStopReceived || agentSettledReceived) &&
         !closeError;
       if (signal) {
@@ -1203,7 +785,7 @@ export async function runProcess(
       const stderrText = stderrTail.text();
       if (code !== 0 && rawStdout.trim() && !closeError && !forcedDrainAfterFinalSuccess) closeError = rawStdout.trim();
       if (code !== 0 && stderrText.trim() && !closeError && !forcedDrainAfterFinalSuccess) closeError = stderrText.trim();
-      result.exitCode = forcedDrainAfterFinalSuccess ? 0 : (forcedTerminationSignal || signal ? (code ?? 1) : (code ?? 0));
+      result.exitCode = forcedDrainAfterFinalSuccess ? 0 : (supervisor.forcedTerminationSignal || signal ? (code ?? 1) : (code ?? 0));
       if (!result.error && closeError) result.error = closeError;
       result.stderr = stderrText;
       // M3-01 考察点 6 close 后收尾: 已有 error 且 exitCode===0 → exitCode=1 (错误结果不许 0 退出码).
@@ -1268,11 +850,7 @@ export async function runProcess(
       childExited = true;
       // L24 (info): 子进程 exit 事件.
       logEvent({ level: "info", event: "process.exit", mode: "single", agent: result.agent, data: {} });
-      clearFinalDrainTimers();
-      if (protocolHardKillTimer) {
-        clearTimeout(protocolHardKillTimer);
-        protocolHardKillTimer = undefined;
-      }
+      supervisor.notifyChildExited();
     });
     proc.on("close", (code, signal) => settle(code, signal));
     proc.on("error", (err) => {
@@ -1282,27 +860,9 @@ export async function runProcess(
       settle(1, null);
     });
 
-    // M3-01 考察点 4: 取消 (AbortSignal → SIGTERM → CANCEL_SIGKILL_DELAY_MS 后 SIGKILL).
-    // 取消不走独立 "aborted" 结果类型 — 走通用错误路径: close 后 signal 非空 →
-    // "Subagent process terminated by signal SIGTERM." + exitCode 1 (除非 forcedDrainAfterFinalSuccess).
+    // M3-01 考察点 4: 取消监听注册归调度器 (abort → SIGTERM → 3s SIGKILL; dispose 时 removeEventListener).
     if (signal) {
-      const kill = () => {
-        if (settled) return;
-        // L20 (warn): abort 信号取消请求 (signal.aborted 或 addEventListener 触发时).
-        logEvent({ level: "warn", event: "signal.abort_requested", mode: "single", agent: result.agent, data: { aborted: signal.aborted } });
-        signalChild("SIGTERM");
-        setTimeout(() => {
-          if (!proc.killed) {
-            signalChild("SIGKILL");
-          }
-        }, CANCEL_SIGKILL_DELAY_MS); // 非 unref (原码同款: 兜底必须触发)
-      };
-      if (signal.aborted) {
-        kill();
-      } else {
-        signal.addEventListener("abort", kill, { once: true });
-        removeAbortListener = () => signal.removeEventListener("abort", kill);
-      }
+      supervisor.watchCancel(signal);
     }
   });
 }

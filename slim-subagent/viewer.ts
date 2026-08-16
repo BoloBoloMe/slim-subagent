@@ -13,6 +13,8 @@ import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
 import type { Component, KeyId, TUI } from "@earendil-works/pi-tui";
 import type { DisplayStatus, RunNode, SlimUsage } from "./projection.ts";
 import { isAttention } from "./projection.ts";
+// 归档读取经 run-record 接缝 (布局/状态映射/脱敏单一真相), 不再本地复刻.
+import { readArchivedRun, liveSessionFileOf } from "./run-record.ts";
 
 // ---------------------------------------------------------------------------
 // 域类型: 批次时间线 + 子代理会话
@@ -248,11 +250,6 @@ export function buildTimeline(records: ViewerBatch[]): ViewerBatch[] {
 // 纯函数层 3: RunNode 快照 → 批次 (live 喂入路径, D011 不从磁盘反推运行态)
 // ---------------------------------------------------------------------------
 
-/** session 文件路径 (single/resume 用 run-0 子目录, parallel-child 直接用 session.jsonl, 与 single.ts sessionPaths 同构). */
-function sessionFileOf(kind: RunNode["kind"], sessionDir: string): string {
-  return path.join(sessionDir, kind === "parallel-child" ? "session.jsonl" : "run-0/session.jsonl");
-}
-
 function liveAgentOf(node: RunNode): ViewerAgent {
   const sessionDir = node.sessionDir;
   return {
@@ -272,7 +269,7 @@ function liveAgentOf(node: RunNode): ViewerAgent {
     ...(node.diagnostics?.hint !== undefined ? { hint: node.diagnostics.hint } : {}),
     ...(node.logCursor?.lastEventId !== undefined ? { logEventIds: [node.logCursor.lastEventId] } : {}),
     ...(node.runId !== undefined ? { runId: node.runId } : {}),
-    ...(sessionDir ? { sessionDir, sessionFile: sessionFileOf(node.kind, sessionDir) } : {}),
+    ...(sessionDir ? { sessionDir, sessionFile: liveSessionFileOf(node.kind, sessionDir) } : {}),
     source: "live",
   };
 }
@@ -314,130 +311,59 @@ export function batchFromLiveNodes(nodes: RunNode[]): ViewerBatch | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// 纯函数层 4: 磁盘回补 20 批 (D011) — run.json + run-*/session.jsonl, 缺/坏文件跳过
+// 纯函数层 4: 磁盘回补 20 批 (D011) — 归档读取走 run-record 接缝, 缺/坏文件跳过
 // ---------------------------------------------------------------------------
-
-function fileMtimeOrUndef(p: string): number | undefined {
-  try {
-    const st = fs.statSync(p);
-    return st.isFile() ? st.mtimeMs : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function startedAtMsOf(json: Record<string, unknown>, runDir: string): number {
-  const startedAt = json.startedAt;
-  if (typeof startedAt === "string") {
-    const t = Date.parse(startedAt);
-    if (Number.isFinite(t)) return t;
-  }
-  return fileMtimeOrUndef(runDir) ?? 0;
-}
-
-/** single 回补: run.json → ViewerAgent (sessionFile 三级候选: sessionFile 字段 → run-0 → 同目录). */
-function archivedSingleAgent(json: Record<string, unknown>, runDir: string, runId: string): ViewerAgent {
-  const candidates = [
-    ...(typeof json.sessionFile === "string" ? [path.join(runDir, json.sessionFile)] : []),
-    path.join(runDir, "run-0", "session.jsonl"),
-    path.join(runDir, "session.jsonl"),
-  ];
-  const sessionFile = candidates.find((c) => { try { return fs.statSync(c).isFile(); } catch { return false; } }) ?? candidates[1];
-  const endedAtMs = typeof json.endedAtMs === "number" ? json.endedAtMs : fileMtimeOrUndef(sessionFile);
-  const model = typeof json.model === "string" && json.model !== "" ? json.model : "—";
-  const status = archivedStatusOf(json.finalStatus);
-  return {
-    id: runId,
-    agent: typeof json.agent === "string" ? json.agent : "",
-    taskPreview: "",
-    model,
-    status,
-    ...(json.usage && typeof json.usage === "object" ? { usage: json.usage as SlimUsage } : {}),
-    ...(endedAtMs !== undefined ? { endedAtMs } : {}),
-    runId,
-    sessionDir: runDir,
-    sessionFile,
-    source: "disk",
-  };
-}
-
-/** parallel 回补: run.json (mode:"parallel" + tasks) → 批量 agent; 子 agent 状态用批次 finalStatus 传播 (子无 run.json). */
-function archivedParallelBatch(json: Record<string, unknown>, runDir: string, runId: string): ViewerBatch {
-  const tasks = Array.isArray(json.tasks) ? json.tasks : [];
-  const status = archivedStatusOf(json.finalStatus);
-  const agents: ViewerAgent[] = tasks.map((t, i) => {
-    const task = t as Record<string, unknown>;
-    const childDir = path.join(runDir, `run-${i}`);
-    // ISSUE-08 修复: parallel child 的 session.jsonl 直接在 run-<idx>/ 下 (skipRunJson 路径), 非 run-0 子目录.
-    const sessionFile = path.join(childDir, "session.jsonl");
-    const endedAtMs = fileMtimeOrUndef(sessionFile);
-    const model = typeof task.model === "string" && task.model !== "" ? task.model : "—";
-    return {
-      id: `${runId}#${i}`,
-      agent: typeof task.agent === "string" ? task.agent : "",
-      taskPreview: typeof task.task === "string" ? task.task : "",
-      model,
-      status,
-      ...(endedAtMs !== undefined ? { endedAtMs } : {}),
-      runId,
-      sessionDir: childDir,
-      sessionFile,
-      source: "disk",
-    };
-  });
-  const total = agents.length;
-  return {
-    id: runId,
-    mode: "parallel",
-    createdAtMs: startedAtMsOf(json, runDir),
-    task: "",
-    agents,
-    total,
-    done: status === "done" ? total : 0,
-    failed: isAttention(status) ? total : 0,
-    active: 0,
-    source: "disk",
-  };
-}
-
-/** archived 状态映射 (run.json.finalStatus; 无补丁无失败证据 → done), 与 projection.archivedStatusOf 同构. */
-function archivedStatusOf(finalStatus: unknown): DisplayStatus {
-  switch (finalStatus) {
-    case "timeout": return "timeout";
-    case "usage_budget": return "budget";
-    case "cancelled": return "cancelled";
-    case "error":
-    case "failed":
-    case "aborted": return "failed";
-    case "active": return "active";
-    default: return "done";
-  }
-}
 
 /** 单个 run 目录 → 批次 (disk)。run.json 缺/坏 → undefined (跳过不崩). */
 export function batchFromRunDir(runDir: string): ViewerBatch | undefined {
-  let raw: string;
-  try {
-    raw = fs.readFileSync(path.join(runDir, "run.json"), "utf-8");
-  } catch {
-    return undefined;
+  const rec = readArchivedRun(runDir);
+  if (!rec) return undefined;
+  if (rec.mode === "parallel") {
+    // parallel 回补: 子 agent 状态用批次 finalStatus 传播 (子无 run.json); taskPreview 已在接缝脱敏.
+    const agents: ViewerAgent[] = rec.children.map((c) => ({
+      id: `${rec.runId}#${c.index}`,
+      agent: c.agent,
+      taskPreview: c.taskPreview,
+      model: c.model ?? "—",
+      status: rec.status,
+      ...(c.endedAtMs !== undefined ? { endedAtMs: c.endedAtMs } : {}),
+      runId: rec.runId,
+      sessionDir: c.sessionDir,
+      sessionFile: c.sessionFile,
+      source: "disk",
+    }));
+    const total = agents.length;
+    return {
+      id: rec.runId,
+      mode: "parallel",
+      createdAtMs: rec.createdAtMs,
+      task: "",
+      agents,
+      total,
+      done: rec.status === "done" ? total : 0,
+      failed: isAttention(rec.status) ? total : 0,
+      active: 0,
+      source: "disk",
+    };
   }
-  let json: Record<string, unknown>;
-  try {
-    json = JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    return undefined;
-  }
-  const runId = typeof json.runId === "string" && json.runId !== "" ? json.runId : path.basename(runDir);
-  if (json.mode === "parallel") {
-    return archivedParallelBatch(json, runDir, runId);
-  }
-  const agent = archivedSingleAgent(json, runDir, runId);
-  const st = agent.status;
+  const agent: ViewerAgent = {
+    id: rec.runId,
+    agent: rec.agent,
+    taskPreview: "",
+    model: rec.model ?? "—",
+    status: rec.status,
+    ...(rec.usage ? { usage: rec.usage } : {}),
+    ...(rec.endedAtMs !== undefined ? { endedAtMs: rec.endedAtMs } : {}),
+    runId: rec.runId,
+    sessionDir: runDir,
+    sessionFile: rec.sessionFile,
+    source: "disk",
+  };
+  const st = rec.status;
   return {
-    id: runId,
-    mode: json.mode === "resume" ? "resume" : "single",
-    createdAtMs: startedAtMsOf(json, runDir),
+    id: rec.runId,
+    mode: rec.mode === "resume" ? "resume" : "single",
+    createdAtMs: rec.createdAtMs,
     task: "",
     agents: [agent],
     total: 1,
