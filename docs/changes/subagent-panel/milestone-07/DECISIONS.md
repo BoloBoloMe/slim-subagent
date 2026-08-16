@@ -112,3 +112,13 @@
 - 状态: 当前有效
 - 来源: M01/M03-M06 evidence
 - 内容: pty 驱动须持续 drain (缓冲满会挂起 pi 事件循环); overlay 关闭断言用状态探针 (status 命令) 而非屏幕帧 (重绘时序致误报); LLM 触发路径偶发 abort 可重试.
+
+## 执行索引 (→ execution/issues)
+- D001, D002, D003, D004, D005 → ISSUE-05
+- D006 → 无执行 issue (范围排除, PRD §11)
+- D007, D008, D011 → ISSUE-06
+- D009 → ISSUE-07, ISSUE-08
+- D010 → 无执行 issue (禁令, 全局禁止范围)
+- D012 → 全部 (测试策略)
+- D013 → ISSUE-03
+- F001 → ISSUE-05; F002 → ISSUE-08; F003 → 存档备查; F004 → ISSUE-06; F005 → 全部冒烟
