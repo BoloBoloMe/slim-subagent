@@ -1,6 +1,6 @@
 # subagent LLM 自由诊断 产品规格 (v0.2)
 
-- 状态: **已施工 (首版)**, 待用户验收
+- 状态: **已交付** (2026-08-16 用户功能验收通过)
 - 日期: 2026-08-16 (v0.1 草稿 → v0.2 用户拍板方向变更后重写)
 - 起源: subagent-panel 验收 (AC 11) 中用户提出 — 启发式 Diagnose 只认预设失败模式, 期望「诊断失败日志, 找出优化点」的开放式归因.
 - 前置产品: subagent 可观测性控制面 (PRD v2.0 `../subagent-panel/pi_agent_subagent_panel_prd.md`, 交付说明 `../subagent-panel/milestone-16/delivery.md`)
