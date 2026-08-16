@@ -119,6 +119,8 @@ export interface ParallelChildProgress {
   usage: Usage;
   model?: string;
   isError: boolean;
+  // ISSUE-04 (D008): 调度信号 — 批次开始预建行时 false, L30 scheduled 时置 true (投影 pending/active 判据).
+  scheduled?: boolean;
 }
 
 function emptyUsage() {
@@ -301,6 +303,7 @@ async function runParallelTasks(
     recentOutput: [],
     usage: emptyUsage(),
     isError: false,
+    scheduled: false, // ISSUE-04 (D008): 未进 worker = pending, L30 时点转 active
   }));
   const completedFlags = new Array<boolean>(tasks.length).fill(false);
   const emitParallelUpdate = () => {
@@ -311,6 +314,8 @@ async function runParallelTasks(
   emitParallelUpdate(); // 初始 1 次 (全部 running)
 
   const runChild = async (r: (typeof resolved)[number], index: number): Promise<ParallelChildResult> => {
+    // ISSUE-04 (D008): L30 时点标记 scheduled (进 worker 即 active; 投影以此由 pending 转 active).
+    childProgress[index].scheduled = true;
     // L30 (info): 子任务调度.
     logEvent({ level: "info", event: "parallel.child.scheduled", mode: "parallel", batchRunId, childIndex: index, agent: r.agent?.name ?? String(r.item.agent) });
     const t = r.item;
