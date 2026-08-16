@@ -19,6 +19,7 @@ import {
   sessionRootDir,
   sessionsRootDir,
   TASK_ARG_LIMIT,
+  writeRunJsonSettle,
 } from "./single.ts";
 import type { SingleDetails, StreamUpdateCallback } from "./single.ts";
 import { acquireSessionLease, releaseSessionLease, isLeaseActive } from "./session-lease.ts";
@@ -132,7 +133,7 @@ function buildResumeArgs(opts: {
 // 错误一律转 isError 结果 (不 throw), 对齐 index.ts 校验层形态.
 export async function runResume(
   params: { id?: unknown; task?: unknown; model?: unknown; thinking?: unknown; timeoutMs?: unknown; usageBudget?: unknown; cwd?: unknown },
-  ctx: { cwd?: unknown; getContextUsage?: unknown },
+  ctx: { cwd?: unknown }, // M02 D001: 子口径 — 仅 cwd 消费 (modelRegistry 查询在 resolveEffectiveUsageBudget/assembleSingleResult 共用)
   signal?: AbortSignal,
   onUpdate?: StreamUpdateCallback,
 ): Promise<AgentToolResult<SingleDetails>> {
@@ -167,11 +168,20 @@ export async function runResume(
   const usageBudget = typeof params.usageBudget === "number" ? params.usageBudget : undefined;
 
   // 寻址 + session 校验 (TC-002/TC-004).
+  // L33 (info): resume 寻址开始.
+  logEvent({ level: "info", event: "resume.find.start", mode: "resume", data: { id } });
   let run: ResumedRunInfo;
   try {
     run = findRunForResume(id);
   } catch (e) {
-    return err((e as Error).message);
+    const message = (e as Error).message;
+    // L34/L35: 寻址失败按文案分类 — Ambiguous 歧义 warn, not found 缺失 error.
+    if (message.includes("Ambiguous")) {
+      logEvent({ level: "warn", event: "resume.find.ambiguous", mode: "resume", data: { id, message } });
+    } else if (message.includes("not found")) {
+      logEvent({ level: "error", event: "resume.find.not_found", mode: "resume", data: { id, message } });
+    }
+    return err(message);
   }
 
   // 原 agent 定义重建 --append-system-prompt (调和 6: agent 参数忽略, 复用 run.json 原 agent).
@@ -182,9 +192,6 @@ export async function runResume(
   }
 
   const cwd = typeof params.cwd === "string" && params.cwd !== "" ? params.cwd : run.cwd;
-  const getContextUsage = typeof (ctx as { getContextUsage?: unknown }).getContextUsage === "function"
-    ? () => ((ctx as { getContextUsage: () => { tokens: number | null; contextWindow: number; percent: number | null } | undefined }).getContextUsage())
-    : undefined;
 
   // 强制预算 (用户协议): resume (含收尾) 同样强制 — 未显式传 budget → 自动 0.7 × 原 run 模型窗口.
   const eff = resolveEffectiveUsageBudget(usageBudget, run.model ?? agent.model, ctx);
@@ -193,8 +200,13 @@ export async function runResume(
   let lease: LeaseOwner;
   try {
     lease = acquireSessionLease(run.sessionFile, run.runId);
+    // L36 (info): 会话锁获取成功.
+    logEvent({ level: "info", event: "resume.lease.acquired", mode: "resume", runId: run.runId, data: { sessionFile: run.sessionFile } });
   } catch (e) {
-    return err((e as Error).message);
+    const message = (e as Error).message;
+    // L37 (warn): 锁冲突/获取失败.
+    logEvent({ level: "warn", event: "resume.lease.conflict", mode: "resume", data: { id, message } });
+    return err(message);
   }
   let released = false;
   const release = () => {
@@ -216,7 +228,19 @@ export async function runResume(
       fs.writeFileSync(promptFile, agent.systemPrompt, { encoding: "utf-8", mode: 0o600 });
     }
     const args = buildResumeArgs({ model: run.model, thinking: run.thinking, tools: run.tools, sessionFile: run.sessionFile, promptFile, tmpDir, task });
-    const result = await runProcess(agent, task, args, cwd, timeoutMs, signal, eff.budget, onUpdate);
+    // L38 (info): resume 子进程 spawn 前 (与 single.spawn.start 同构载荷).
+    logEvent({ level: "info", event: "resume.spawn.start", mode: "resume", runId: run.runId, agent: run.agent, model: run.model, timeoutMsExplicit: timeoutMs, usageBudgetExplicit: eff.budget });
+    // M02 D002: spawn 前捕获 (与 resume settle 补丁 endedAtMs 配对).
+    const startedAtMs = Date.now();
+    const result = await runProcess(agent, task, args, cwd, timeoutMs, signal, eff.budget, eff.auto, onUpdate);
+    // M02 D005: resume settle 补丁写 (sessionDir = 原 run 目录, 复用 single 同源写入函数).
+    writeRunJsonSettle(sessionRootDir(run.runId), {
+      endedAtMs: result.endedAtMs ?? Date.now(),
+      finalStatus: result.stopReason ?? (result.exitCode === 0 ? "done" : "failed"),
+      usage: result.usage,
+    });
+    // L39 (info): resume 结果收尾.
+    logEvent({ level: "info", event: "resume.result.final", mode: "resume", runId: run.runId, agent: run.agent, data: { resumed: true } });
     return assembleSingleResult(result, {
       runId: run.runId,
       sessionDir: sessionRootDir(run.runId),
@@ -224,7 +248,11 @@ export async function runResume(
       agent: run.agent,
       usageBudget: eff.budget,
       budgetAuto: eff.auto,
-      getContextUsage,
+      ctx,
+      model: run.model ?? agent.model,
+      task,
+      timeoutMs,
+      startedAtMs,
       resumed: true,
     });
   } finally {

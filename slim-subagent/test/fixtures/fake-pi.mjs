@@ -107,6 +107,28 @@ if (scenario === "slow") {
   emit();
   setInterval(emit, 200);
   // 事件循环由 interval 保持; 进程在 SIGKILL (timeout 序列末段) 处被内核杀死.
+} else if (scenario === "assistant-hang") {
+  // ISSUE-02 TC-004 系 (子口径窗口诊断): 先发一条与 assistant-stop 同源的 assistant 消息 (totalTokens 18,
+  // model fake-model-1), 随后保持存活 (SIGINT/SIGTERM 被顶层 handler 记录后继续跑, 由 timeout SIGKILL 收尾).
+  // 供 abort 路径在消息已解析后取 contextTokens/model 算子代理窗口占用 — assistant-stop 本身秒退, 消息常赶不上 10ms abort.
+  const ok = message("assistant", "Hello from fake assistant", {
+    model: "fake-model-1",
+    stopReason: "stop",
+    usage: { input: 10, output: 5, cacheRead: 2, cacheWrite: 1, cost: { total: 0.5 }, totalTokens: 18 },
+  });
+  console.log(jsonEvent(ok));
+  appendSessionEvent({ type: "message_end", message: ok });
+  // 接住 SIGINT (timeout 阶段 1) / SIGTERM (drain/timeout 阶段 2) → 记录后优雅 exit 0;
+  // 中止语义由父进程 timedOut 标记兜底 (TC-005c 同款路径), 避免跑满 SIGKILL +4s.
+  process.on("SIGINT", () => {
+    recordSignal("SIGINT");
+    process.exit(0);
+  });
+  process.on("SIGTERM", () => {
+    recordSignal("SIGTERM");
+    process.exit(0);
+  });
+  setInterval(() => {}, 1000); // keep alive 等信号
 } else if (scenario === "drain-stop") {
   // TS-004 TC-012/TC-013: terminal stop 后不主动退出 → 父进程 1s grace 后 SIGTERM, 再 3s SIGKILL.
   // SIGTERM 被顶层 handler 记录后继续跑 (SIGTERM 后仍不退) → 由 SIGKILL (内核) 杀死;
@@ -144,10 +166,12 @@ if (scenario === "slow") {
   console.log(jsonEvent(m));
   appendSessionEvent({ type: "message_end", message: m });
   setInterval(() => {}, 1000); // keep alive 等待信号; SIGTERM 默认动作杀死进程.
-} else if (scenario === "huge-line" || scenario === "huge-line-ignore" || scenario === "huge-turn-end" || scenario === "huge-agent-end" || scenario === "huge-garbage") {
+} else if (scenario === "huge-line" || scenario === "huge-line-ignore" || scenario === "huge-turn-end" || scenario === "huge-agent-end" || scenario === "huge-garbage" || scenario === "huge-string-unclosed") {
   // ISSUE-02 防御项收口 (M3-01 考察点 5): 单行超限 / 聚合行投影 fake 场景.
   // 公共: 先发粒度 user + assistant(stop) 事件, 随后 3 段写一条巨型行 (间隔 50ms, 逼中段超限);
   //   huge-line / huge-garbage: 超限触发 failProtocol → SIGTERM, 接住记录后 exit 1;
+  //   huge-string-unclosed (ISSUE-02): turn_end 前缀 + 未闭合字符串 — payload 在字符串内合法 (push 全成功),
+  //   行结束 finish() 返回 undefined → 投影失败 -> failProtocol (L14->L13 序列);
   //   huge-line-ignore: 接住 SIGTERM 继续跑 (heartbeat), 由 3s 后 SIGKILL 杀死;
   //   huge-turn-end / huge-agent-end: 投影成功 (不触发 failProtocol), 写完后延迟 100ms exit 0 (防 stdout 截断).
   const bigAssistant = message("assistant", "Hello from fake assistant", {
@@ -172,6 +196,8 @@ if (scenario === "slow") {
     "huge-agent-end": { prefix: '{"type":"agent_end","willRetry":false,"agent":{"data":"', suffix: '"}}' },
     // 打开对象永不闭合 + 悬空引号 → 投影校验失败 → failProtocol.
     "huge-garbage": { prefix: '{"type":"turn_end","message":{', suffix: '"' },
+    // 未闭合字符串: payload 在字符串内全合法 (push 成功), 行结束 finish() 返回 undefined → 投影失败 → failProtocol.
+    "huge-string-unclosed": { prefix: '{"type":"turn_end","message":"', suffix: "" },
   };
   const spec = LINE_SPECS[scenario];
   const payload = "x".repeat(4000);

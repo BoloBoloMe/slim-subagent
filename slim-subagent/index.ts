@@ -202,8 +202,7 @@ async function runParallelTasks(
   agents: AgentConfig[],
   cwd: string,
   signal: AbortSignal | undefined,
-  getContextUsage: (() => { tokens: number | null; contextWindow: number; percent: number | null } | undefined) | undefined,
-  ctx: unknown, // 强制预算: 子代理模型窗口查询 (modelRegistry)
+  ctx: unknown, // M02 D001: 子代理模型窗口查询 (modelRegistry, 强制预算 + contextPercent 同源)
   onUpdate?: StreamUpdateCallback, // ISSUE-07 deferred (b): parallel onUpdate 聚合流
 ): Promise<AgentToolResult<ParallelDetails>> {
   const tasks = params.tasks as { agent?: unknown; task?: unknown; model?: unknown; thinking?: unknown; timeoutMs?: unknown; usageBudget?: unknown }[];
@@ -220,6 +219,8 @@ async function runParallelTasks(
   }
   // 官方示例 index.ts:584-590 (M2-D004 硬顶 8): 超限直接报错, 逐字文案.
   if (tasks.length > MAX_PARALLEL_TASKS) {
+    // L29 (warn): 批任务超上限拒绝.
+    logEvent({ level: "warn", event: "parallel.batch.too_many", mode: "parallel", data: { count: tasks.length, max: MAX_PARALLEL_TASKS } });
     return {
       content: [{ type: "text", text: `Too many parallel tasks (${tasks.length}). Max is ${MAX_PARALLEL_TASKS}.` }],
       details: { mode: "parallel", runId: "", results: [] },
@@ -228,6 +229,8 @@ async function runParallelTasks(
   }
 
   const batchRunId = makeRunId();
+  // L28 (info): 并行批次开始.
+  logEvent({ level: "info", event: "parallel.batch.start", mode: "parallel", batchRunId, data: { taskCount: tasks.length, concurrency: MAX_CONCURRENCY } });
   const batchRoot = sessionRootDir(batchRunId);
   fs.mkdirSync(batchRoot, { recursive: true });
   // M2-D008: 顶层 model/thinking/timeoutMs/usageBudget 作批默认, item 级字段覆盖 (undefined 回退顶层默认).
@@ -285,15 +288,21 @@ async function runParallelTasks(
   emitParallelUpdate(); // 初始 1 次 (全部 running)
 
   const runChild = async (r: (typeof resolved)[number], index: number): Promise<ParallelChildResult> => {
+    // L30 (info): 子任务调度.
+    logEvent({ level: "info", event: "parallel.child.scheduled", mode: "parallel", batchRunId, childIndex: index, agent: r.agent?.name ?? String(r.item.agent) });
     const t = r.item;
     const agent = r.agent;
     const task = typeof t.task === "string" ? t.task : "";
     // per-child 未知 agent → 该任务独立失败 (官方 runSingleAgent 同款, M1-D009 文案), 不阻塞整批 (M2-D004).
     if (!agent) {
+      // L32 (error): 未知 agent — 该子任务独立失败, 不阻塞整批.
+      logEvent({ level: "error", event: "parallel.child.unknown_agent", mode: "parallel", batchRunId, childIndex: index, agent: String(t.agent) });
       const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
       const failed: ParallelChildResult = { index, agent: String(t.agent), task, isError: true, text: `Unknown agent: "${String(t.agent)}". Available agents: ${available}.`, details: { usage: emptyUsage(), runId: "", sessionDir: "", exitCode: 1 } };
       allResults[index] = failed;
       completedFlags[index] = true;
+      // L31 (info): 子任务完成 (unknown-agent 分支).
+      logEvent({ level: "info", event: "parallel.child.completed", mode: "parallel", batchRunId, childIndex: index, agent: String(t.agent), data: { isError: true } });
       emitParallelUpdate();
       return failed;
     }
@@ -307,7 +316,7 @@ async function runParallelTasks(
       usageBudget: r.usageBudget,
       budgetAuto: r.budgetAuto,
       signal,
-      getContextUsage,
+      ctx, // M02 D001: 子口径 — 窗口查询 (替代旧 getContextUsage 父口径)
       // 调和 12: per-child 共享批次 runId + run-<idx> 子目录, 不写 per-child run.json.
       runId: batchRunId,
       sessionDir: path.join(batchRoot, `run-${index}`),
@@ -316,6 +325,8 @@ async function runParallelTasks(
     const completed: ParallelChildResult = { index, agent: agent.name, task, isError: res.isError === true, text: resultTextOf(res), details: res.details };
     allResults[index] = completed;
     completedFlags[index] = true;
+    // L31 (info): 子任务完成 (正常分支).
+    logEvent({ level: "info", event: "parallel.child.completed", mode: "parallel", batchRunId, childIndex: index, agent: agent.name, data: { isError: res.isError === true, stopReason: res.details.stopReason } });
     emitParallelUpdate();
     return completed;
   };
@@ -521,15 +532,13 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text", text: validationError }], details: {}, isError: true };
       }
 
-      // ISSUE-05: 并行/single 共用 cwd 与 getContextUsage (ISSUE-03 诊断数据源, M3-05).
+      // ISSUE-05: 并行/single 共用 cwd 与 ctx (M02 D001 子代理口径 — modelRegistry 查询, 替代 ISSUE-03 父口径 getContextUsage,
+      // 强制预算 + details.contextPercent 同一窗口源).
       const cwd = typeof params?.cwd === "string" && params.cwd !== "" ? params.cwd : _ctx.cwd;
-      const getContextUsage = typeof (_ctx as { getContextUsage?: unknown }).getContextUsage === "function"
-        ? () => ((_ctx as { getContextUsage: () => { tokens: number | null; contextWindow: number; percent: number | null } | undefined }).getContextUsage())
-        : undefined;
 
       // ISSUE-05: tasks[] 并行分支 (M2-D004/M2-D008; per-child 未知 agent 走独立失败, 不阻塞整批).
       if (Array.isArray(params?.tasks) && (params.tasks as unknown[]).length > 0) {
-        return runParallelTasks(params, agents, cwd, _signal, getContextUsage, _ctx, onUpdate);
+        return runParallelTasks(params, agents, cwd, _signal, _ctx, onUpdate);
       }
       // 校验层已保证 agent 存在 (缺 agent/未知 agent 均已在 validateExecuteParams 拦截), 此处 find 必命中.
       const agent = agents.find((a) => a.name === (params?.agent as string))!;
@@ -537,7 +546,7 @@ export default function (pi: ExtensionAPI) {
       const model = typeof params?.model === "string" && params.model !== "" ? params.model : undefined;
       const thinking = typeof params?.thinking === "string" && params.thinking !== "" ? params.thinking : undefined;
       // ISSUE-03: timeoutMs 参数提取 — 原始数值透传 (0/负数/NaN/非整数由 runSingleAgent 校验层统一兜底报错,
-      // 修复前被此处 >0 过滤成 undefined 静默按默认 15min 跑, 校验层不可达) + ctx.getContextUsage 注入.
+      // 修复前被此处 >0 过滤成 undefined 静默按默认 15min 跑, 校验层不可达).
       const timeoutMs = typeof params?.timeoutMs === "number" ? params.timeoutMs : undefined;
       // ISSUE-04: usageBudget 原始值透传 (纯 number 正数由 runSingleAgent 校验层统一兜底报错, 不在此过滤 —
       // 过滤会掩盖 0/负数/NaN/非 number 等非法值, 校验层不可达).
@@ -547,7 +556,7 @@ export default function (pi: ExtensionAPI) {
       const eff = resolveEffectiveUsageBudget(explicitBudget, model ?? agent.model, _ctx);
       // TS-004: 取消监听 (AbortSignal) 透传 — abort → SIGTERM → 3s SIGKILL (M3-01 考察点 4);
       // 本切片: onUpdate 透传 (M3-02 考察点 6 触发点/payload 见 single.ts).
-      return runSingleAgent({ agent, task, model, thinking, cwd, timeoutMs, usageBudget: eff.budget, budgetAuto: eff.auto, getContextUsage, signal: _signal, onUpdate });
+      return runSingleAgent({ agent, task, model, thinking, cwd, timeoutMs, usageBudget: eff.budget, budgetAuto: eff.auto, ctx: _ctx, signal: _signal, onUpdate });
     },
     // ISSUE-07: TUI 最小渲染 (M1-D001(9)) — renderCall 摘要 + renderResult 折叠/展开 + usage 统计.
     renderCall(args, theme) {

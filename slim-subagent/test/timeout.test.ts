@@ -1,6 +1,6 @@
 // ISSUE-03 TS-001~003 切片测试: timeout 定时器 + 三阶段信号 + 诊断载荷.
 // 接缝 (EXECUTION.md 测试策略接缝 1/2/3): fake ExtensionAPI 捕获 registerTool 后直调 execute(single);
-// fake pi 经 PI_SUBAGENT_PI_BINARY env 注入; 临时 HOME 隔离; fakeCtx 注入 getContextUsage.
+// fake pi 经 PI_SUBAGENT_PI_BINARY env 注入; 临时 HOME 隔离; fakeCtx 注入 modelWindow (子代理口径窗口).
 // 覆盖: M1-D005 (timeout 15min + 诊断), M2-D002(b) 中止载荷, M3-05 诊断字段清单,
 // 调和 11 (中止标记优先 stopReason), M3-01 考察点 6 close 收尾 (error && exitCode 0 → 1).
 
@@ -41,12 +41,12 @@ type SingleDetails = {
   hint?: string;
 };
 
-// 临时 HOME 隔离 + fake pi 跑一次 single execute; 支持注入 getContextUsage / 信号记录文件.
+// 临时 HOME 隔离 + fake pi 跑一次 single execute; 支持注入 modelWindow (modelRegistry 窗口, 子代理口径) / 信号记录文件.
 async function runSingleWithTimeout(
   home: string,
   opts: {
     timeoutMs?: number;
-    getContextUsage?: () => { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
+    modelWindow?: number;
     scenario?: string;
     signalFile?: string;
   },
@@ -61,9 +61,10 @@ async function runSingleWithTimeout(
       process.env.FAKE_PI_SCENARIO = opts.scenario ?? "assistant-stop";
       if (opts.signalFile !== undefined) process.env.FAKE_PI_SIGNAL_FILE = opts.signalFile;
       const tool = captureTool();
+      // M02 D001: 子口径窗口注入 — modelRegistry.find → contextWindow (替代旧 getContextUsage 父口径).
       const ctx = {
         cwd: home,
-        getContextUsage: opts.getContextUsage,
+        ...(opts.modelWindow !== undefined ? { modelRegistry: { find: () => ({ contextWindow: opts.modelWindow }) } } : {}),
       } as unknown as ExtensionContext;
       const params: Record<string, unknown> = { agent: "Alpha", task: "做点事" };
       if (opts.timeoutMs !== undefined) params.timeoutMs = opts.timeoutMs;
@@ -225,26 +226,27 @@ test("TC-003 timeout session dir retained for resume", async () => {
 
 // ---- TS-002: diagnostics 数据源 ----
 
-test("TC-004 diagnostics prefer ctx.getContextUsage", async () => {
+test("TC-004 diagnostics computed from child model window (子代理口径)", async () => {
   const home = makeTempHome();
   try {
     writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");
-    // 默认阈值 30: 25% 属正常区 → 建议 resume.
+    // M02 D001: ctx% 一律子代理口径 — fake 先发 assistant 消息 (totalTokens=18) 再悬停, modelWindow=2000 → (18/2000)*100%.
+    // 默认阈值 30: 0.9% 属正常区 → 建议 resume.
     const { details } = await runSingleWithTimeout(home, {
-      timeoutMs: 10,
-      getContextUsage: () => ({ tokens: 50000, contextWindow: 128000, percent: 25 }),
+      timeoutMs: 300,
+      modelWindow: 2000,
+      scenario: "assistant-hang",
     });
 
-    assert.equal(details.contextPercent, 25);
-    assert.equal(details.contextWindow, 128000);
-    // M3-05 规则 2: getContextUsage().tokens 可得时优先于 message totalTokens.
-    assert.equal(details.contextTokens, 50000);
+    assert.equal(details.contextPercent, (18 / 2000) * 100);
+    assert.equal(details.contextWindow, 2000);
     assert.ok(typeof details.hint === "string", "有百分比时应产出 hint");
     assert.ok(details.hint!.includes("resume"), "正常区占用应建议 resume");
     // 长版指令: 判断规则行应含阈值与正常区判定.
     const text = resultText(await runSingleWithTimeout(home, {
-      timeoutMs: 10,
-      getContextUsage: () => ({ tokens: 50000, contextWindow: 128000, percent: 25 }),
+      timeoutMs: 300,
+      modelWindow: 2000,
+      scenario: "assistant-hang",
     }).then((r) => r.result));
     assert.ok(text.includes("≤30%"), `判断规则应含阈值边界, got: ${text}`);
   } finally {
@@ -252,16 +254,17 @@ test("TC-004 diagnostics prefer ctx.getContextUsage", async () => {
   }
 });
 
-test("TC-004a default threshold 30: 39% occupancy enters sluggish zone, suggests new agent", async () => {
+test("TC-004a default threshold 30: 45% occupancy enters sluggish zone, suggests new agent", async () => {
   const home = makeTempHome();
   try {
     writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");
-    // 修复 50→30: 默认阈值 30, 39% 已入迟钝区 → 建议新起 (旧实现 50 下会误建议 resume).
+    // 修复 50→30: 默认阈值 30, 18/40=45% 已入迟钝区 → 建议新起 (旧实现 50 下会误建议 resume).
     const { result, details } = await runSingleWithTimeout(home, {
-      timeoutMs: 10,
-      getContextUsage: () => ({ tokens: 50000, contextWindow: 128000, percent: 39 }),
+      timeoutMs: 300,
+      modelWindow: 40,
+      scenario: "assistant-hang",
     });
-    assert.equal(details.contextPercent, 39);
+    assert.equal(details.contextPercent, (18 / 40) * 100);
     assert.ok(details.hint!.includes("新起"), `高占用 hint 应建议新起, got: ${details.hint}`);
     const text = resultText(result);
     assert.ok(text.includes(">30%"), `判断规则应标注迟钝区, got: ${text}`);
@@ -278,16 +281,17 @@ test("TC-004b threshold configurable via PI_SUBAGENT_RESUME_HINT_PERCENT", async
   const home = makeTempHome();
   try {
     writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");
-    // 环境变量一处覆盖: 阈值提到 50 → 39% 回到正常区, 建议 resume (旧行为可配置重现).
+    // 环境变量一处覆盖: 阈值提到 50 → 18/50=36% 回到正常区, 建议 resume (旧行为可配置重现).
     const prev = process.env.PI_SUBAGENT_RESUME_HINT_PERCENT;
     process.env.PI_SUBAGENT_RESUME_HINT_PERCENT = "50";
     try {
       const { result, details } = await runSingleWithTimeout(home, {
-        timeoutMs: 10,
-        getContextUsage: () => ({ tokens: 50000, contextWindow: 128000, percent: 39 }),
+        timeoutMs: 300,
+        modelWindow: 50,
+        scenario: "assistant-hang",
       });
-      assert.equal(details.contextPercent, 39);
-      assert.ok(details.hint!.includes("resume"), `阈值 50 下 39% 应建议 resume, got: ${details.hint}`);
+      assert.equal(details.contextPercent, (18 / 50) * 100);
+      assert.ok(details.hint!.includes("resume"), `阈值 50 下 36% 应建议 resume, got: ${details.hint}`);
       assert.ok(resultText(result).includes("≤50%"), `判断规则应反映配置值 50, got: ${resultText(result)}`);
     } finally {
       if (prev === undefined) delete process.env.PI_SUBAGENT_RESUME_HINT_PERCENT;
@@ -327,26 +331,21 @@ test("TC-004c budget line follows PI_SUBAGENT_BUDGET_RATIO (文案与计算同�
   }
 });
 
-test("TC-005 diagnostics with ctx unavailable falls back to message fields", async () => {
+test("TC-005 diagnostics with ctx unavailable fall back to default window 128000", async () => {
   const home = makeTempHome();
   try {
     writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");
-    // 不注入 getContextUsage → contextPercent 显式 null (M3-05 字段 1: 不可用则 null),
-    // contextWindow 保持 undefined (M3-05 字段 3: JSON 流场景缺省); hint 走回退产出.
-    const { result, details } = await runSingleWithTimeout(home, { timeoutMs: 10 });
+    // M02 D001: 无 modelRegistry → 窗口走兜底 128000 (defaultModelWindow); 模型本身仍可推导 (result.model),
+    // 故 contextWindow=128000 且 contextPercent 可算 (18/128000*100); 模型完全不可得才 null (已移入 TS-001 纯函数用例).
+    const { result, details } = await runSingleWithTimeout(home, { timeoutMs: 300, scenario: "assistant-hang" });
 
     assert.equal(result.isError, true);
-    assert.equal(details.contextPercent, null);
-    assert.equal(details.contextWindow, undefined);
+    assert.equal(details.contextWindow, 128000);
+    assert.equal(details.contextPercent, (18 / 128000) * 100);
     assert.equal(details.stopReason, "timeout");
-    // M3-05 回退路径: hint 仍须产出 — 中文一句话, 含 "resume 恢复 / 新起子代理" 指引.
-    assert.ok(typeof details.hint === "string" && details.hint.length > 0, "ctx 不可得时 hint 应回退产出");
+    // 兜底窗口下 0.014% << 30 正常区 → hint 含 resume 恢复指引.
+    assert.ok(typeof details.hint === "string" && details.hint.length > 0, "ctx 不可得时 hint 应产出");
     assert.ok(details.hint!.includes("resume"), `hint 应含 resume 恢复指引: ${details.hint}`);
-    assert.ok(
-      details.hint!.includes("新起子代理") || details.hint!.includes("新起"),
-      `hint 应含新起子代理指引: ${details.hint}`,
-    );
-    // contextTokens 可能来自 message (若 fake 在超时前已发事件) 或 undefined.
   } finally {
     cleanup(home);
   }
@@ -359,13 +358,13 @@ test("TC-005d hint only produced for aborted (timeout) results, not normal compl
     // 正常完成 (scenario assistant-stop, 不传 timeoutMs) + ctx 可用且 percent 非 null:
     // 诊断字段照常打包, 但 hint 不得产出 — 修复前正常完成结果也带 "建议 resume..." 误导已完成任务.
     const { result, details } = await runSingleWithTimeout(home, {
-      getContextUsage: () => ({ tokens: 50000, contextWindow: 128000, percent: 39 }),
+      modelWindow: 45,
     });
 
     assert.equal(result.isError, undefined, "正常完成不应 isError");
     assert.equal(details.stopReason, "stop");
-    assert.equal(details.contextPercent, 39, "正常完成诊断字段仍应打包");
-    assert.equal(details.contextWindow, 128000);
+    assert.equal(details.contextPercent, (18 / 45) * 100, "正常完成诊断字段仍应打包 (子代理口径)");
+    assert.equal(details.contextWindow, 45);
     assert.equal(details.hint, undefined, "正常完成结果不得产出 hint (仅中止结果带 hint)");
     // M6 修复 1 反向: 正常完成的 content 保持纯净, 不拼 details 信息块.
     assert.ok(!resultText(result).includes("runId:"), `正常完成 content 不应含信息块, got: ${resultText(result)}`);
@@ -379,11 +378,12 @@ test("TC-005b diagnostics high occupancy hint suggests new agent", async () => {
   try {
     writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");
     const { details } = await runSingleWithTimeout(home, {
-      timeoutMs: 10,
-      getContextUsage: () => ({ tokens: 80000, contextWindow: 128000, percent: 62.5 }),
+      timeoutMs: 300,
+      modelWindow: 40,
+      scenario: "assistant-hang",
     });
 
-    assert.equal(details.contextPercent, 62.5);
+    assert.equal(details.contextPercent, (18 / 40) * 100);
     assert.ok(typeof details.hint === "string");
     assert.ok(
       details.hint!.includes("新起") || details.hint!.toLowerCase().includes("new"),

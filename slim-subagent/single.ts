@@ -20,7 +20,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { AgentConfig } from "./agents.ts";
 // ISSUE-01: 日志插桩 (仅加日志调用, 不改执行逻辑; 写失败静默吞, 见 log.ts).
-import { logEvent } from "./log.ts";
+import { logEvent, taskPreviewOf } from "./log.ts";
 
 // M3-02 考察点 2: message_end 事件 message 的解析所需最小面 (事件流来自 JSON.parse, 结构宽松).
 interface AgentMessageLike {
@@ -70,6 +70,7 @@ export interface SingleResult {
   timedOut?: boolean;
   budgetExceeded?: boolean; // ISSUE-04: usageBudget 触顶中止标记 (settle 收口 stopReason/exitCode, isError 谓词用)
   timeoutMs?: number;
+  endedAtMs?: number; // ISSUE-02 (M02 D002/D005): settle 收束时刻 (run.json settle 补丁同源), normal 也落
 }
 
 // M2-D002(a) 正常载荷 + M2-D002(b) 中止载荷 details.
@@ -96,6 +97,13 @@ export interface SingleDetails {
   budgetAuto?: boolean; // true = 自动 (未显式传 usageBudget), false = 显式
   hint?: string;
   resumed?: boolean; // ISSUE-06: resume 结果标记 (仅 resume 路径置 true, M3-03 考察点 1 移植规格 1)
+  // M02 D002: final details 补丁字段 — mode/agent/taskPreview/timeoutMsExplicit/startedAtMs/endedAtMs (D002/D004).
+  mode?: string;
+  agent?: string;
+  taskPreview?: string; // ≤120/单行化/redaction (D003 同一规则), 完整 task 永不进 details
+  timeoutMsExplicit?: number; // 仅显式超时落
+  startedAtMs?: number;
+  endedAtMs?: number;
 }
 
 export type SingleToolResult = AgentToolResult<SingleDetails> & { isError?: boolean };
@@ -270,6 +278,32 @@ function sessionPaths(runId: string): { sessionDir: string; sessionFile: string 
 }
 
 // ISSUE-02 #2: run.json {runId, agent, model?, thinking?, cwd, startedAt, sessionFile} (原子写: 同目录 tmp + rename).
+// ISSUE-02 #4 (M02 D005): settle 完成后二次原子写 — 读原 run.json (不存在则 return), 合并 endedAtMs/finalStatus/usage 摘要,
+// tmp+rename 同目录原子替换; 全程 try/catch, 失败只降级 warn (L07 settle 标记), 绝不 throw (不阻塞终止管线).
+// 导出: resume.ts 复用 (resume settle 补丁写同源).
+export function writeRunJsonSettle(
+  sessionDir: string,
+  patch: { endedAtMs: number; finalStatus: string | undefined; usage: Usage },
+): void {
+  try {
+    const runJsonPath = path.join(sessionDir, "run.json");
+    if (!fs.existsSync(runJsonPath)) return; // per-child/无 run.json 批次 → 无首笔则无补丁 (调用侧已按 skipRunJson 过滤)
+    const existing = JSON.parse(fs.readFileSync(runJsonPath, "utf-8")) as Record<string, unknown>;
+    const merged = {
+      ...existing,
+      endedAtMs: patch.endedAtMs,
+      ...(patch.finalStatus !== undefined ? { finalStatus: patch.finalStatus } : {}),
+      // D005: usage 摘要 (Session Viewer 需 elapsed/usage 一手证据; 不覆盖首笔字段之外的结构).
+      usage: patch.usage,
+    };
+    const tmp = path.join(sessionDir, "run.json.settle.tmp");
+    fs.writeFileSync(tmp, JSON.stringify(merged, null, 2) + "\n");
+    fs.renameSync(tmp, runJsonPath);
+  } catch (e) {
+    logEvent({ level: "warn", event: "run.json.write.failed", errorMessage: (e as Error).message, data: { settle: true } });
+  }
+}
+
 function writeRunJson(
   data: { runId: string; agent: string; model?: string; thinking?: string; cwd: string; startedAt: string; tools?: string[] },
   sessionDir: string,
@@ -713,6 +747,7 @@ export async function runProcess(
   timeoutMs?: number,
   signal?: AbortSignal,
   usageBudget?: number, // ISSUE-04: token 上限 (已由 runSingleAgent 校验层保证正数或 undefined)
+  budgetAuto?: boolean, // ISSUE-02 L16/L17: 预算自动/显式标记 (仅日志载荷, 不影响执行)
   onUpdate?: StreamUpdateCallback, // M3-02 考察点 6: 流式更新回调
 ): Promise<SingleResult> {
   const effectiveTimeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -779,6 +814,13 @@ export async function runProcess(
     let finalHardKillTimer: ReturnType<typeof setTimeout> | undefined;
     // M3-01 考察点 4: 取消监听移除句柄 (finish/settle 时 removeEventListener).
     let removeAbortListener: (() => void) | undefined;
+    // ISSUE-02 L11-L24 采样状态 (高频防护: 仅首/尾或首次超阈值记, 防刷盘).
+    let loggedInitialUpdate = false; // L11: emitUpdate 初始采样已记
+    let pendingFinalUpdate = false; // L11: 下一次 emitUpdate 为 settle 最终次
+    let nonJsonLineCount = 0; // L12: 非 JSON 行计数
+    let nonJsonWarned = false; // L12: 首次 >3 已记
+    let assistantMessageCount = 0; // L15: assistant message_end 采样
+    let budgetWarned80 = false; // L16: 预算 80% 提示已记
 
     const clearFinalDrainTimers = () => {
       if (finalDrainTimer) { clearTimeout(finalDrainTimer); finalDrainTimer = undefined; }
@@ -790,17 +832,23 @@ export async function runProcess(
     // timeout 先触发时 drain 定时器照常存在, 但 close 时两套定时器都清理, 不互相污染.
     const startFinalDrain = () => {
       if (childExited || settled || finalDrainTimer) return;
+      // L22 (info): final drain 启动 (terminal stop/agent_settled 后 1s grace 强制收尾).
+      logEvent({ level: "info", event: "final_drain.start", mode: "single", agent: result.agent, data: { graceMs: FINAL_STOP_GRACE_MS } });
       finalDrainTimer = setTimeout(() => {
         if (settled) return;
-        const termSent = trySignalChild(proc, "SIGTERM");
+        const termSent = signalChild("SIGTERM");
         if (!termSent) return;
         forcedTerminationSignal = true;
+        // L23 (warn): drain 强制阶段 — SIGTERM 置真处.
+        logEvent({ level: "warn", event: "final_drain.forced", mode: "single", agent: result.agent, data: { signal: "SIGTERM" } });
         if (!cleanTerminalAssistantStopReceived && !agentSettledReceived && !assistantError) {
           result.error = result.error ?? `Subagent process did not exit within ${FINAL_STOP_GRACE_MS}ms after its terminal event. Forcing termination.`;
         }
         finalHardKillTimer = setTimeout(() => {
           if (settled) return;
-          forcedTerminationSignal = trySignalChild(proc, "SIGKILL") || forcedTerminationSignal;
+          forcedTerminationSignal = signalChild("SIGKILL") || forcedTerminationSignal;
+          // L23 (warn): drain 强制阶段 — SIGKILL 处.
+          logEvent({ level: "warn", event: "final_drain.forced", mode: "single", agent: result.agent, data: { signal: "SIGKILL" } });
         }, HARD_KILL_MS);
         finalHardKillTimer.unref?.();
       }, FINAL_STOP_GRACE_MS);
@@ -809,13 +857,20 @@ export async function runProcess(
 
     // M3-01 考察点 3 + ISSUE-04: 三阶段终止序列共用 (timeout / usageBudget 触顶同款):
     // SIGINT @0ms → SIGTERM @+1000ms → SIGKILL @+4000ms (子进程有机会优雅收尾, 逐步升级).
+    // L21 (warn): trySignalChild 包装 — 每次发信号记日志 (ok=返回), 行为等价.
+    const signalChild = (sig: NodeJS.Signals): boolean => {
+      const ok = trySignalChild(proc, sig);
+      logEvent({ level: "warn", event: "process.signal.sent", mode: "single", agent: result.agent, data: { signal: sig, ok } });
+      return ok;
+    };
+
     const startAbortSequence = () => {
-      trySignalChild(proc, "SIGINT"); // 阶段 1: 立即 SIGINT
+      signalChild("SIGINT"); // 阶段 1: 立即 SIGINT
       sigtermTimer = setTimeout(() => { // 阶段 2: +1000ms → SIGTERM
-        trySignalChild(proc, "SIGTERM");
+        signalChild("SIGTERM");
       }, TIMEOUT_SIGTERM_DELAY_MS);
       sigkillTimer = setTimeout(() => { // 阶段 3: +4000ms → SIGKILL
-        trySignalChild(proc, "SIGKILL");
+        signalChild("SIGKILL");
       }, TIMEOUT_SIGKILL_DELAY_MS);
     };
 
@@ -823,12 +878,31 @@ export async function runProcess(
     timeoutTimer = setTimeout(() => {
       if (result.budgetExceeded) return; // ISSUE-04: 先触发者胜 (budget 已触顶, timeout 不再发)
       result.timedOut = true;
+      // L19 (error): timeout 触发 (timedOut 置真处).
+      logEvent({ level: "error", event: "timeout.fired", mode: "single", agent: result.agent, data: { timeoutMs: effectiveTimeout } });
       result.error = `Subagent timed out after ${effectiveTimeout}ms.`;
       startAbortSequence();
     }, effectiveTimeout);
+    // L18 (info/debug): timeout 定时器武装 — 显式 timeoutMs 记 info, 自动缺省记 debug.
+    logEvent({
+      level: timeoutMs !== undefined ? "info" : "debug",
+      event: "timeout.armed",
+      mode: "single",
+      agent: result.agent,
+      timeoutMsExplicit: timeoutMs,
+      data: { timeoutMs: effectiveTimeout, explicit: timeoutMs !== undefined },
+    });
 
     // M3-02 考察点 6: 流式更新 emit — 触发点 spawn 初始 + tool_execution_start/end + message_end + tool_result_end + close 最终; 官方口径直接带 live result/messages.
     const emitUpdate = (textOverride?: string) => {
+      // L11 (info): 采样 — spawn 初始那次与 settle 最终那次记 info, 中间 emitUpdate 不记 (高频防刷盘).
+      if (!loggedInitialUpdate) {
+        loggedInitialUpdate = true;
+        logEvent({ level: "info", event: "single.update.emit", mode: "single", agent: result.agent, data: { sample: "init", results: 1 } });
+      } else if (pendingFinalUpdate) {
+        pendingFinalUpdate = false;
+        logEvent({ level: "info", event: "single.update.emit", mode: "single", agent: result.agent, data: { sample: "final", results: 1 } });
+      }
       if (!onUpdate) return;
       const text = textOverride ?? (getFinalOutput(result.messages) || "(running...)");
       try {
@@ -857,6 +931,12 @@ export async function runProcess(
       } catch {
         // M3-02 考察点 3: 非 JSON 行静默跳过, 原行入 rawStdoutTail 供失败诊断 (exit 0 时完全无害).
         rawStdoutTail.push(line + "\n");
+        // L12 (warn): 非 JSON 行计数 — 首次超过 3 记一次, 之后不再记 (防刷).
+        nonJsonLineCount++;
+        if (nonJsonLineCount > 3 && !nonJsonWarned) {
+          nonJsonWarned = true;
+          logEvent({ level: "warn", event: "stdout.line.non_json", mode: "single", agent: result.agent, data: { count: nonJsonLineCount } });
+        }
         return;
       }
       // ISSUE-07 deferred (a): tool_execution_start/end → progress 累积 + onUpdate (考察点 1b/6).
@@ -892,15 +972,41 @@ export async function runProcess(
           result.usage.cost += u.cost?.total || 0;
           if (typeof u.totalTokens === "number") result.contextTokens = u.totalTokens;
         }
+        // L15 (info): message_end usage 采样 — 第 1 次 + 每 5 次 assistant 记 (高频防刷盘).
+        assistantMessageCount++;
+        if (assistantMessageCount === 1 || assistantMessageCount % 5 === 0) {
+          logEvent({
+            level: "info",
+            event: "message_end.usage",
+            mode: "single",
+            agent: result.agent,
+            model: result.model,
+            data: {
+              input: result.usage.input,
+              output: result.usage.output,
+              cacheRead: result.usage.cacheRead,
+              cacheWrite: result.usage.cacheWrite,
+              cost: result.usage.cost,
+              turns: result.usage.turns,
+              contextTokens: result.contextTokens,
+            },
+          });
+        }
         // ISSUE-04 (M3-02 考察点 5 选项 B): usage 累加后立即比对 (挂点: 累加之后 fireUpdate 之前, 同步无异步间隙),
         // used = input + output + cacheWrite (M2-D003, cacheRead 不计), used >= usageBudget 触顶 → 复用 timeout 终止管线.
         // 守卫: 已触顶/已 timeout 不重发; terminal stop 已收到后不再触发 (结果已干净完成, 风险提示 2 选守卫).
         if (usageBudget !== undefined && !result.budgetExceeded && !result.timedOut && !cleanTerminalAssistantStopReceived) {
           const used = result.usage.input + result.usage.output + result.usage.cacheWrite;
           if (used >= usageBudget) {
+            // L17 (error): budget 触顶 — 记 error 后照旧启动终止序列.
+            logEvent({ level: "error", event: "usage_budget.abort", mode: "single", agent: result.agent, data: { used, budget: usageBudget, budgetAuto } });
             result.budgetExceeded = true;
             result.error = `Usage budget exhausted: reported tokens ${used} reached limit ${usageBudget}.`;
             startAbortSequence();
+          } else if (used >= 0.8 * usageBudget && !budgetWarned80) {
+            // L16 (warn): 预算 80% 提示 — 每个 run 只记一次 (采样防刷).
+            budgetWarned80 = true;
+            logEvent({ level: "warn", event: "usage_budget.warn_80pct", mode: "single", agent: result.agent, data: { used, budget: usageBudget, budgetAuto } });
           }
         }
         if (msg.model && !result.model) result.model = msg.model; // 首个 assistant 消息
@@ -953,10 +1059,12 @@ export async function runProcess(
         diagnosticTail: tail,
       };
       result.error = formatProtocolOutputLimit(result.protocolError);
+      // L13 (error): 协议输出超限 — failProtocol 记录 (stream/limitBytes/observedBytes).
+      logEvent({ level: "error", event: "protocol.output_limit", mode: "single", agent: result.agent, data: { stream: "stdout", limitBytes: maxPendingLineBytes, observedBytes } });
       if (!childExited) {
-        trySignalChild(proc, "SIGTERM");
+        signalChild("SIGTERM");
         protocolHardKillTimer = setTimeout(() => {
-          if (!childExited) trySignalChild(proc, "SIGKILL");
+          if (!childExited) signalChild("SIGKILL");
         }, HARD_KILL_MS);
         protocolHardKillTimer.unref?.();
       }
@@ -1011,8 +1119,11 @@ export async function runProcess(
       if (projecting) {
         const projected = projection?.finish();
         if (projected === undefined) {
+          // L14 (debug): 投影失败 — 先记 debug 再 failProtocol (L14→L13 序列).
+          logEvent({ level: "debug", event: "aggregate.projection", mode: "single", agent: result.agent, data: { projectedBytes, ok: false } });
           failProtocol(projectedBytes, projectedPrefix, projectedTail);
         } else {
+          logEvent({ level: "debug", event: "aggregate.projection", mode: "single", agent: result.agent, data: { projectedBytes, ok: true } });
           processLine(projected);
         }
       } else if (pendingLineBytes > 0) {
@@ -1047,6 +1158,7 @@ export async function runProcess(
     });
 
     const settle = (code: number | null, signal: string | null) => {
+      result.endedAtMs = Date.now(); // ISSUE-02 (M02 D005): settle 收束时刻 — 供 details.endedAtMs 与 run.json settle 补丁同源
       if (settled) return;
       settled = true;
       clearTimeoutTimers(); // ISSUE-03: 进程自然退出时清理所有定时器.
@@ -1141,6 +1253,7 @@ export async function runProcess(
         },
       });
 
+      pendingFinalUpdate = true; // L11: 标记下一次 emitUpdate 为 settle 最终次 (采样 data:{sample:"final"}).
       emitUpdate(result.finalOutput || result.error || "(no output)"); // close 后最终 1 次 (考察点 6)
       resolve(result);
     };
@@ -1148,6 +1261,8 @@ export async function runProcess(
     // M3-01 考察点 2: exit 事件 → childExited + 清理 drain 定时器 (原码同款, close 前先到).
     proc.on("exit", () => {
       childExited = true;
+      // L24 (info): 子进程 exit 事件.
+      logEvent({ level: "info", event: "process.exit", mode: "single", agent: result.agent, data: {} });
       clearFinalDrainTimers();
       if (protocolHardKillTimer) {
         clearTimeout(protocolHardKillTimer);
@@ -1168,18 +1283,12 @@ export async function runProcess(
     if (signal) {
       const kill = () => {
         if (settled) return;
-        try {
-          proc.kill("SIGTERM");
-        } catch {
-          // 已退出进程 kill 抛错容忍 (trySignalChild 同款防御)
-        }
+        // L20 (warn): abort 信号取消请求 (signal.aborted 或 addEventListener 触发时).
+        logEvent({ level: "warn", event: "signal.abort_requested", mode: "single", agent: result.agent, data: { aborted: signal.aborted } });
+        signalChild("SIGTERM");
         setTimeout(() => {
           if (!proc.killed) {
-            try {
-              proc.kill("SIGKILL");
-            } catch {
-              // 已退出进程 kill 抛错容忍
-            }
+            signalChild("SIGKILL");
           }
         }, CANCEL_SIGKILL_DELAY_MS); // 非 unref (原码同款: 兜底必须触发)
       };
@@ -1207,10 +1316,10 @@ function buildRecoveryDirective(opts: {
   const pct = opts.percent;
   const occupancy =
     pct === null
-      ? "父会话上下文占用不可得 (按正常区处理)"
+      ? "子代理会话上下文占用不可得 (按正常区处理)"
       : pct > opts.thresholdPercent
-        ? `父会话上下文占用 ${pct}% (>${opts.thresholdPercent}% 迟钝区, 建议新起)`
-        : `父会话上下文占用 ${pct}% (≤${opts.thresholdPercent}% 正常区, 建议恢复)`;
+        ? `子代理会话上下文占用 ${pct}% (>${opts.thresholdPercent}% 迟钝区, 建议新起)`
+        : `子代理会话上下文占用 ${pct}% (≤${opts.thresholdPercent}% 正常区, 建议恢复)`;
   if (!opts.sessionSaved) {
     return `${occupancy}; 本 run 未留下可恢复会话 (中止时无完整消息落盘), 无法 resume — 直接以新子代理重发任务.`;
   }
@@ -1238,7 +1347,11 @@ export function assembleSingleResult(
     agent: string;
     usageBudget?: number; // 生效预算 (强制解析后): 显式或自动 70% 窗口
     budgetAuto?: boolean; // true = 自动 (未显式传 usageBudget), false = 显式
-    getContextUsage?: () => { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
+    ctx?: unknown; // M02 D001: 子代理模型窗口查询源 (modelRegistry)
+    model?: string; // M02 D001: 调用侧生效模型 (effectiveModel), windowModel 优先级低于 result.model
+    task?: string; // M02 D002: taskPreview 原材料 (complete task 永不进 details)
+    timeoutMs?: number; // M02 D002: 显式超时 (仅显式落 timeoutMsExplicit)
+    startedAtMs?: number; // M02 D002: spawn 前捕获的时刻
     resumed?: boolean; // ISSUE-06: resume 结果标记
   },
 ): SingleToolResult {
@@ -1257,30 +1370,27 @@ export function assembleSingleResult(
     ? (result.errorMessage || result.stderr || finalOutput || "(no output)")
     : (finalOutput || "(no output)");
 
-  // ISSUE-03/04 TS-002: 诊断载荷 — 优先 ctx.getContextUsage() (M3-05 推荐字段清单), 不可得时 message 保底.
-  // 修复项 1: contextPercent 显式缺省 null (M3-05 字段 1 "不可用则 null"), 不得留 undefined.
+  // M02 D001: ctx% 一律子代理口径 — contextTokens(实际) / resolveModelWindow(推导窗口),
+  // 窗口来源优先级运行 result.model (首个 assistant 消息实际模型) → 调用侧 effective model; 皆未知则 null/undefined.
   let contextPercent: number | null = null;
   let contextWindow: number | undefined;
-  let contextTokens = result.contextTokens; // 保底: message_end 最新 totalTokens
+  const contextTokens = result.contextTokens; // message_end 最新 totalTokens
+  const windowModel = result.model ?? opts.model;
+  contextWindow = windowModel !== undefined ? resolveModelWindow(opts.ctx, windowModel) : undefined;
+  contextPercent =
+    windowModel !== undefined && typeof contextTokens === "number" && contextWindow !== undefined && contextWindow > 0
+      ? (contextTokens / contextWindow) * 100
+      : null;
   let hint: string | undefined;
   const isAborted = result.timedOut || result.budgetExceeded;
-  // 修复项 2: hint 仅中止 (timeout/usageBudget) 结果产出 — 正常完成结果不得带 "建议 resume..." (误导已完成任务);
-  // 诊断字段 (contextPercent/contextWindow/contextTokens) 正常完成仍照常打包.
-  if (opts.getContextUsage) {
-    const cu = opts.getContextUsage();
-    if (cu) {
-      contextPercent = cu.percent;
-      contextWindow = cu.contextWindow;
-      // M3-05 规则 2: getContextUsage().tokens 可得时优先于 message totalTokens.
-      if (typeof cu.tokens === "number") contextTokens = cu.tokens;
-      if (isAborted && cu.percent !== null && cu.percent !== undefined) {
-        hint = cu.percent > resumeHintPercent()
-          ? "上下文窗口占用较高 (超过迟钝区阈值), 建议新起子代理而非 resume."
-          : "建议 resume 恢复任务, 复用已产生的部分输出.";
-      }
-    }
+  // hint 仅中止 (timeout/usageBudget) 结果产出 — 正常完成结果不得带 "建议 resume..." (误导已完成任务);
+  // 阈值比较用子口径推导值 (D001: hint 评估子 session 的 resume 价值, 用父口径是 bug).
+  if (isAborted && contextPercent !== null) {
+    hint = contextPercent > resumeHintPercent()
+      ? "上下文窗口占用较高 (超过迟钝区阈值), 建议新起子代理而非 resume."
+      : "建议 resume 恢复任务, 复用已产生的部分输出.";
   }
-  // ISSUE-03/04 收口: 中止结果 hint 恒产出 — ctx 不可得 (或 percent 不可得) 时回退一句话
+  // 中止结果 hint 恒产出 — ctx 不可得 (或 percent 不可得) 时回退一句话
   // (中文, 含 "resume 恢复 / 新起子代理" 两选项指引, M2-D002(b)).
   if (isAborted && hint === undefined) {
     hint = "子代理已中止: 可 resume 恢复继续执行, 或新起子代理重跑任务.";
@@ -1334,6 +1444,8 @@ export function assembleSingleResult(
   return {
     content: [{ type: "text", text: textOut }],
     details: {
+      mode: "single", // M02 D002/D004: final 卡自洽 (live details 同形, 防节点键漂移)
+      agent: opts.agent, // D002: renderResult 去硬编码 "subagent" 的契约面
       usage: result.usage,
       runId: opts.runId,
       sessionDir: opts.sessionDir,
@@ -1352,6 +1464,12 @@ export function assembleSingleResult(
       ...(opts.budgetAuto !== undefined ? { budgetAuto: opts.budgetAuto } : {}),
       ...(isAborted ? { sessionSaved } : {}),
       ...(opts.resumed ? { resumed: true } : {}),
+      // M02 D002: 补丁字段 — taskPreview ≤120/单行化/redaction (D003), 完整 task 永不进 details;
+      // timeoutMsExplicit/startedAtMs/endedAtMs 有则落 (endedAtMs 取自 result, settle 时刻).
+      ...(opts.task !== undefined ? { taskPreview: taskPreviewOf(opts.task) } : {}),
+      ...(opts.timeoutMs !== undefined ? { timeoutMsExplicit: opts.timeoutMs } : {}),
+      ...(opts.startedAtMs !== undefined ? { startedAtMs: opts.startedAtMs } : {}),
+      ...(result.endedAtMs !== undefined ? { endedAtMs: result.endedAtMs } : {}),
     },
     isError: isError || undefined,
   };
@@ -1367,7 +1485,7 @@ export async function runSingleAgent(opts: {
   usageBudget?: number; // ISSUE-04: token 上限 (纯 number 正数, 触顶中止; 非法值校验报错)
   budgetAuto?: boolean; // 强制预算: true = 自动 (0.7 × 模型窗口), false = 显式传参
   signal?: AbortSignal; // TS-004: 取消监听 (M3-01 考察点 4: abort → SIGTERM → 3s SIGKILL)
-  getContextUsage?: () => { tokens: number | null; contextWindow: number; percent: number | null } | undefined; // ISSUE-03: ctx.getContextUsage 用于诊断
+  ctx?: unknown; // M02 D001: 子代理模型窗口查询源 (modelRegistry), 替代旧 getContextUsage 父口径
   onUpdate?: StreamUpdateCallback; // M3-02 考察点 6: 流式更新回调 (spawn/message_end/tool_result_end/close 触发点)
   // ISSUE-05 parallel per-child (EXECUTION.md 调和 12): 共享批次 runId + per-child 目录覆盖,
   // per-child 不写 run.json (批次 run.json 由调度器写).
@@ -1450,7 +1568,19 @@ export async function runSingleAgent(opts: {
       usageBudgetExplicit: usageBudget,
       data: { budgetAuto: opts.budgetAuto },
     });
-    const result = await runProcess(opts.agent, opts.task, args, opts.cwd, opts.timeoutMs, opts.signal, usageBudget, opts.onUpdate);
+    // M02 D002: spawn 前捕获 (details.startedAtMs = 本次执行起点, 与 settle endedAtMs 配对算 elapsed).
+    const startedAtMs = Date.now();
+    const result = await runProcess(opts.agent, opts.task, args, opts.cwd, opts.timeoutMs, opts.signal, usageBudget, opts.budgetAuto, opts.onUpdate);
+
+    // M02 D005: settle 完成后二次原子写 run.json 补 endedAtMs/finalStatus/usage;
+    // per-child (skipRunJson) 跳过 — 批次 run.json 由调度器写, 补丁也归调度器.
+    if (!opts.skipRunJson) {
+      writeRunJsonSettle(sessionDir, {
+        endedAtMs: result.endedAtMs ?? Date.now(),
+        finalStatus: result.stopReason ?? (result.exitCode === 0 ? "done" : "failed"),
+        usage: result.usage,
+      });
+    }
 
     return assembleSingleResult(result, {
       runId,
@@ -1459,7 +1589,11 @@ export async function runSingleAgent(opts: {
       agent: opts.agent.name,
       usageBudget: opts.usageBudget,
       budgetAuto: opts.budgetAuto,
-      getContextUsage: opts.getContextUsage,
+      ctx: opts.ctx,
+      model: effectiveModel,
+      task: opts.task,
+      timeoutMs: opts.timeoutMs,
+      startedAtMs,
     });
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true }); // temp prompt 文件 close 后清理 (ISSUE-02 风险提示)
