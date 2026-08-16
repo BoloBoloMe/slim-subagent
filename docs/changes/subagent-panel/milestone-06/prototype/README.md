@@ -71,7 +71,7 @@ agent 调用 `subagent_proto` `{mode:"single"|"parallel", scenario?: "success"|"
 
 ## 手动体验
 
-1. 启动: `pi --no-session --provider deepseek --model deepseek/deepseek-v4-flash --thinking off -ns -np -nc` (COLS=110 ROWS=36).
+1. 启动: `pi --no-session --provider opencode-go --model opencode-go/deepseek-v4-flash --thinking off -ns -np -nc` (COLS=110 ROWS=36).
 2. `/subagent-proto variant a` → 让 agent 调用工具:
    `请调用 subagent_proto 工具, 参数 mode=single, 调用完就结束, 不要调用其他工具.`
    观察: 状态行 ↑/↓/W/$ 实时更新, final 后 ✓ done.

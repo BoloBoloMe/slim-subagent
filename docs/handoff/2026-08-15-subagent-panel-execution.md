@@ -19,7 +19,7 @@
 **pty 验证方法学 (M07 F005, 血泪教训)**:
 - pty 驱动必须持续 drain, 否则缓冲满挂起 pi 事件循环, 扩展 setTimeout 全部失灵
 - overlay 关闭类断言用状态探针 (如 status 命令输出) 不用屏幕帧 — 重绘时序导致缓冲旧帧误报
-- LLM 触发路径偶发 abort, 重试即可; 冒烟启动命令: `pi --no-session --provider deepseek --model deepseek/deepseek-v4-flash --thinking off -ns -np -nc`
+- LLM 触发路径偶发 abort, 重试即可; 冒烟启动命令: `pi --no-session --provider opencode-go --model opencode-go/deepseek-v4-flash --thinking off -ns -np -nc`
 - pi `/reload` 秒级热载 (实测 902ms), 开发迭代用
 
 **环境悬案 (不影响施工, 知道即可)**:

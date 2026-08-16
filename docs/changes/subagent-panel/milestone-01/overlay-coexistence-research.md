@@ -71,7 +71,7 @@ Panel 自检字段设计 (把内部状态渲染到 overlay 上, 供伪终端帧�
 
 `/tmp/pi-overlay-exp/harness2.py` (Python 内置 `pty` 模块, 零依赖):
 - `pty.fork()` + `TIOCSWINSZ` 设 110x36, `TERM=xterm-256color`, 环境变量继承 `DEEPSEEK_API_KEY`
-- 启动: `pi --no-session --provider deepseek --model deepseek/deepseek-v4-flash --thinking off -ne -e overlay-coex.ts -ns -np -nc`
+- 启动: `pi --no-session --provider opencode-go --model opencode-go/deepseek-v4-flash --thinking off -ne -e overlay-coex.ts -ns -np -nc`
 - 帧捕获: pi TUI 全量重绘会输出 `\x1b[2J\x1b[H\x1b[3J`(清屏) ... `\x1b[?2026l`(同步结束), 取两标记之间内容按 `\r\n` 分行, 取末 36 行即当前视口; 触发全量重绘用尺寸抖动 (`TIOCSWINSZ` cols+1 再还原)
 - 断言: 帧文本 grep `COEX-A/ALIVE/tick/idle`, 事件日志 count `STREAM=on`/`INPUT name=X`/`HANDLE_X=...`
 

@@ -89,7 +89,7 @@ snapshot 生成互不干扰; 并行批 root + 4 child, 未完成 child 只显示
 ## 4. 热载验证证据 (pty 驱动真实 pi TUI)
 
 操作序列 (evidence/harness.py, 25/25 PASS):
-1. 启动: `pi --no-session --provider deepseek --model deepseek/deepseek-v4-flash --thinking off -ns -np -nc` (不开 -ne/-e, 走全局扩展发现), 断言 `ext.loaded` marker=proto-v1 (1 条).
+1. 启动: `pi --no-session --provider opencode-go --model opencode-go/deepseek-v4-flash --thinking off -ns -np -nc` (不开 -ne/-e, 走全局扩展发现), 断言 `ext.loaded` marker=proto-v1 (1 条).
 2. Phase A/B: `/subagent-proto single` 与 `/subagent-proto parallel` 命令回放, 7 步/5 步时序全对.
 3. Phase C: 真实 agent 调用 `subagent_proto` (mode=single), 7 步 onUpdate 走真实管线到达, 间隔对; 帧内可见 renderResult 卡.
 4. Phase D 热载: 改 `replay.ts` 的 `MARKER` `proto-v1`→`proto-v2` → 发送 `/reload` → 轮询 replay.log 出现 `{"event":"ext.loaded","marker":"proto-v2"}`.
