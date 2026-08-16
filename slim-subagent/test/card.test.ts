@@ -213,3 +213,43 @@ test("formatStatusIcon maps statuses and active spinner frame", () => {
   assert.equal(formatStatusIcon("active"), "⠿", "无帧时 active = ⠿ 占位");
   assert.equal(formatStatusIcon("active", "⠋"), "⠋", "有帧时 active = spinner 帧");
 });
+
+// ---- 回归: 超宽行不得超出终端宽度 (pi-tui 对超宽行直接 uncaughtException) ----
+
+function dispLen(s: string): number {
+  let n = 0;
+  for (const ch of Array.from(s)) {
+    const cp = ch.codePointAt(0)!;
+    n += cp > 0x2e7f ? 2 : 1;
+  }
+  return n;
+}
+
+test("all rendered lines fit within width (long task / narrow terminal)", () => {
+  const longTask = "执行一个小任务并自证: 1) 用 write 工具创建临时文件 /tmp/pi-subagent-probe-alpha.txt, 内容为一段随机文本".repeat(3);
+  const single: RunNode = {
+    id: "run-1",
+    kind: "single",
+    agent: "worker",
+    taskPreview: longTask,
+    status: "active",
+    usage: { input: 12100, output: 3400, cacheRead: 88000, cacheWrite: 800, cost: 0.0412, turns: 5 },
+    model: "opencode-go/deepseek-v4-flash",
+    contextPercent: 18,
+    progress: { recentTools: [{ tool: "read", argsPreview: longTask, endMs: 1 }], recentOutput: [longTask] },
+  };
+  const pending: RunNode = {
+    id: "b#0",
+    kind: "parallel-child",
+    agent: "worker",
+    taskPreview: longTask,
+    status: "pending",
+  };
+  const root: RunNode = { id: "b", kind: "parallel-root", agent: "parallel", taskPreview: "", status: "active", progress: { done: 0, total: 2 } };
+  for (const w of [40, 80, 137, 200]) {
+    const singleLines = renderRunNodeLines(single, w, { density: "cozy" });
+    for (const l of singleLines) assert.ok(dispLen(l) <= w, `single width=${w} 行超宽: ${dispLen(l)}>${w} :: ${l}`);
+    const parLines = renderParallelLines(root, [pending], w, { density: "cozy" });
+    for (const l of parLines) assert.ok(dispLen(l) <= w, `parallel width=${w} 行超宽: ${dispLen(l)}>${w} :: ${l}`);
+  }
+});

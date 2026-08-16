@@ -182,7 +182,8 @@ function renderSegLine(segs: Seg[], maxWidth: number): string {
     if (t === "") active.pop();
     else active[active.length - 1] = { ...last, plain: t };
   }
-  return active.map((s) => s.plain).join(" · ");
+  // 兑底: 即便固定段 (status/model/ctx) 自身超宽, 最终整行截断到 maxWidth (超宽行会致 pi 崩溃).
+  return truncate(active.map((s) => s.plain).join(" · "), maxWidth);
 }
 
 /** 节点状态行片段 (single 卡与 parallel child 共用; withRecentTask 仅 single 行尾内联 recent/task). */
@@ -220,7 +221,7 @@ function statusRowSegs(node: RunNode, density: CardDensity, withRecentTask: bool
   return segs;
 }
 
-/** 分段展开明细: recentTools ≤3 (expanded ≤10) 逐条 + last output 预览行. */
+/** 分段展开明细: recentTools ≤3 (expanded ≤10) 逐条 + last output 预览行. 修复: 整行截断到 width (前缀+后缀一并计入). */
 function detailLines(node: RunNode, width: number, indent: string, expanded: boolean): string[] {
   const lines: string[] = [];
   const rt = node.progress?.recentTools ?? [];
@@ -228,18 +229,19 @@ function detailLines(node: RunNode, width: number, indent: string, expanded: boo
   const start = Math.max(0, rt.length - limit);
   for (let i = start; i < rt.length; i++) {
     const t = rt[i];
-    lines.push(indent + "→ " + truncate(`${t.tool} ${t.argsPreview}`, Math.max(8, width - dispLen(indent) - 2)));
+    lines.push(truncate(`${indent}→ ${t.tool} ${t.argsPreview}`, width));
   }
   const out = node.progress?.recentOutput ?? [];
   if (out.length > 0) {
-    lines.push(indent + 'last: "' + truncate(out[out.length - 1], Math.max(8, width - dispLen(indent) - 7)) + '"');
+    lines.push(truncate(`${indent}last: "${out[out.length - 1]}"`, width));
   }
   return lines;
 }
 
-/** pending 预建行 (D008): 只 agent + taskPreview + pending 等待并发槽, 无 model/ctx/elapsed/usage. */
+/** pending 预建行 (D008): 只 agent + taskPreview + pending 等待并发槽, 无 model/ctx/elapsed/usage.
+ * 修复: 整行截断到 width (前缀可能已超宽, 不可用固定预算). */
 function pendingLine(node: RunNode, indent: string, width: number): string {
-  return indent + `◌ ${node.agent} · pending 等待并发槽 · task ${truncate(node.taskPreview, Math.max(8, width - dispLen(indent) - 2))}`;
+  return truncate(`${indent}◌ ${node.agent} · pending 等待并发槽 · task ${node.taskPreview}`, width);
 }
 
 /**
@@ -383,7 +385,8 @@ export class RunCardComponent implements Component {
   invalidate(): void {}
   render(width: number): string[] {
     const w = width > 0 ? width : Math.max(40, process.stdout.columns || 80);
-    const lines = this.build(w);
+    // 兜底: 每行最终截断到终端宽度 (pi-tui 对超宽行会直接 uncaughtException 退出).
+    const lines = this.build(w).map((l) => truncate(l, w));
     if (!this.animated) return lines;
     const frame = SPINNER_FRAMES[frameIndexAt(Date.now())];
     return lines.map((l) => (l.includes("⠿") ? l.split("⠿").join(frame) : l));
