@@ -106,6 +106,19 @@ export interface ParallelDetails {
   mode: "parallel";
   runId: string;
   results: ParallelChildResult[];
+  progress: ParallelChildProgress[];
+}
+// ISSUE-03 (F1, M07 D013): per-child 实时进度快照 — 每个 child 预建一行,
+// 运行中由 runSingleAgent onUpdate 透传 recentTools/recentOutput/usage/model/isError,
+// 汇入聚合 details.progress (深拷贝快照, 防闭包污染).
+export interface ParallelChildProgress {
+  childIndex: number;
+  agent: string;
+  recentTools: { tool: string; args: string; endMs: number }[];
+  recentOutput: string[];
+  usage: Usage;
+  model?: string;
+  isError: boolean;
 }
 
 function emptyUsage() {
@@ -212,7 +225,7 @@ async function runParallelTasks(
     if (typeof t !== "object" || t === null || typeof t.task !== "string" || t.task.trim() === "") {
       return {
         content: [{ type: "text", text: `tasks[${i}].task must be a non-empty string` }],
-        details: { mode: "parallel", runId: "", results: [] },
+        details: { mode: "parallel", runId: "", results: [], progress: [] },
         isError: true,
       };
     }
@@ -223,7 +236,7 @@ async function runParallelTasks(
     logEvent({ level: "warn", event: "parallel.batch.too_many", mode: "parallel", data: { count: tasks.length, max: MAX_PARALLEL_TASKS } });
     return {
       content: [{ type: "text", text: `Too many parallel tasks (${tasks.length}). Max is ${MAX_PARALLEL_TASKS}.` }],
-      details: { mode: "parallel", runId: "", results: [] },
+      details: { mode: "parallel", runId: "", results: [], progress: [] },
       isError: true,
     };
   }
@@ -279,11 +292,21 @@ async function runParallelTasks(
     index: i, agent: typeof t.agent === "string" ? t.agent : "", task: typeof t.task === "string" ? t.task : "",
     isError: false, text: "(running...)", details: { usage: emptyUsage(), runId: batchRunId, sessionDir: "", exitCode: -1 },
   }));
+  // ISSUE-03 (F1): per-child 进度预建行 (同 allResults 预建, pending → active 转换不丢行) —
+  // childIndex/agent 固定, recentTools/recentOutput 空, usage 零值, isError false.
+  const childProgress: ParallelChildProgress[] = tasks.map((t, i) => ({
+    childIndex: i,
+    agent: typeof t.agent === "string" ? t.agent : "",
+    recentTools: [],
+    recentOutput: [],
+    usage: emptyUsage(),
+    isError: false,
+  }));
   const completedFlags = new Array<boolean>(tasks.length).fill(false);
   const emitParallelUpdate = () => {
     if (!onUpdate) return;
     const done = completedFlags.filter(Boolean).length;
-    onUpdate({ content: [{ type: "text", text: `Parallel: ${done}/${tasks.length} done, ${tasks.length - done} running...` }], details: { mode: "parallel", results: [...allResults], progress: [] } });
+    onUpdate({ content: [{ type: "text", text: `Parallel: ${done}/${tasks.length} done, ${tasks.length - done} running...` }], details: { mode: "parallel", results: [...allResults], progress: childProgress.map((p) => ({ ...p, recentTools: [...p.recentTools], recentOutput: [...p.recentOutput] })) } });
   };
   emitParallelUpdate(); // 初始 1 次 (全部 running)
 
@@ -300,6 +323,7 @@ async function runParallelTasks(
       const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
       const failed: ParallelChildResult = { index, agent: String(t.agent), task, isError: true, text: `Unknown agent: "${String(t.agent)}". Available agents: ${available}.`, details: { usage: emptyUsage(), runId: "", sessionDir: "", exitCode: 1 } };
       allResults[index] = failed;
+      childProgress[index].isError = true; // ISSUE-03: 未知 agent 分支无流式事件, 进度行直接标记失败
       completedFlags[index] = true;
       // L31 (info): 子任务完成 (unknown-agent 分支).
       logEvent({ level: "info", event: "parallel.child.completed", mode: "parallel", batchRunId, childIndex: index, agent: String(t.agent), data: { isError: true } });
@@ -321,6 +345,22 @@ async function runParallelTasks(
       runId: batchRunId,
       sessionDir: path.join(batchRoot, `run-${index}`),
       skipRunJson: true,
+      onUpdate: (partial) => {
+        // ISSUE-03 (F1): per-child 流式透传 — 取 child 单次 payload 的 progress 快照/results 槽位,
+        // 更新 childProgress[index] 并转发聚合 emitParallelUpdate (节流交给消费侧, 不在此过滤).
+        const snap = partial.details.progress?.[0];
+        const childRes = partial.details.results?.[0];
+        if (snap) {
+          childProgress[index].recentTools = snap.recentTools;
+          childProgress[index].recentOutput = snap.recentOutput;
+        }
+        if (childRes) {
+          childProgress[index].usage = childRes.usage;
+          childProgress[index].model = childRes.model;
+          childProgress[index].isError = childRes.stopReason === "error" || childRes.exitCode !== 0;
+        }
+        emitParallelUpdate();
+      },
     });
     const completed: ParallelChildResult = { index, agent: agent.name, task, isError: res.isError === true, text: resultTextOf(res), details: res.details };
     allResults[index] = completed;
