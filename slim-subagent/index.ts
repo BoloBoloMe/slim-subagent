@@ -13,7 +13,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { Text, isKeyRelease, matchesKey } from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { renderRunCard } from "./card.ts";
 import { projectSlimDetailsToRunNodes } from "./projection.ts";
@@ -25,10 +25,8 @@ import type { SingleDetails, StreamUpdateCallback, Usage } from "./single.ts";
 import { runResume, runSessionGc } from "./resume.ts";
 // ISSUE-01: 日志插桩 (仅加日志调用, 不改执行逻辑; 写失败静默吞, 见 log.ts).
 import { logEvent, taskPreviewOf, runLogGc } from "./log.ts";
-// ISSUE-08: 接线依赖 — viewer (store/组件/建批) + diagnose (runDiagnose).
+// ISSUE-08: 接线依赖 — viewer (store/组件/建批).
 import { SessionViewerComponent, createViewerStore, batchFromLiveNodes } from "./viewer.ts";
-import type { DiagnoseContext } from "./viewer.ts";
-import { runDiagnose } from "./diagnose.ts";
 
 // ISSUE-05: 官方示例 index.ts:33-34 同款常量 (M1-D001(2): 并发 4 / 最大 8, 硬编码不可调).
 const MAX_PARALLEL_TASKS = 8;
@@ -39,7 +37,22 @@ const PER_TASK_OUTPUT_CAP = 50 * 1024;
 // 工具描述: 阻塞语义 + 接口速记 + list/resume 操作语义 (schema 参数描述里没有的);
 // 委派偏置 (独立且值得 / 默认委派 / 主会话职责) 由 promptSnippet 承担, 不重复.
 const TOOL_DESCRIPTION =
-  "调用后阻塞等待结果. 单次: agent + task; 并行: tasks[]; action:\"list\" 发现 agents; \"resume\" + id 恢复中止的运行; \"diagnose\" 诊断运行 (只读, 不重启).";
+  "调用后阻塞等待结果. 单次: agent + task; 并行: tasks[]; action:\"list\" 发现 agents; \"resume\" + id 恢复中止的运行.";
+
+// /agent-diagnose 注入的用户消息 (LLM 自由诊断, PRD: docs/changes/subagent-llm-diagnose/prd.md):
+// 命令本身零逻辑, 诊断由当前会话 LLM 读落盘数据源完成; 提示词须自含数据源位置/字段口径/汇报纪律.
+const DIAGNOSE_PROMPT =
+  "[subagent 诊断请求 — 由 /agent-diagnose 注入]\n" +
+  "请只读诊断 subagent 运行情况, 找出可能存在的 bug 与可优化点, 然后向我汇报.\n\n" +
+  "数据源 (均只读):\n" +
+  "- 结构化日志: ~/.pi/subagent_log/subagent-YYYYMMDD.log (JSONL, 每行一个事件; 字段 ts/level/event/eventId/runId/batchRunId/childIndex/agent/model/status/error/data; level 从 trace 到 fatal)\n" +
+  "- 子代理会话: ~/.pi/agent/slim-subagent/sessions/<runId>/run.json + run-0/session.jsonl; parallel child 在 <batchRunId>/run-<idx>/session.jsonl\n\n" +
+  "要求:\n" +
+  "1. 优先检查 warn/error/fatal 事件与失败 run (status failed/timeout 等), 也留意成功 run 的效率与质量优化点.\n" +
+  "2. 每条结论附证据出处 (日志文件#eventId 或会话路径).\n" +
+  "3. 证据不足就明说缺口, 不要编造问题.\n" +
+  "4. 日志已脱敏; 会话正文可能含敏感内容, 汇报时不要大段复述原文.\n" +
+  "5. 输出结构: 发现的 bug (按严重度排序) → 优化建议 → 证据缺口 (若有).";
 
 // M2-D008 参数 3: tasks item 结构.
 const TaskItem = Type.Object({
@@ -51,7 +64,7 @@ const TaskItem = Type.Object({
   usageBudget: Type.Optional(Type.Number({ description: "token 上限" })),
 });
 
-// schema 14 参数 (M2-D008 钉死 10 + ISSUE-08 增 diagnose 的 since/levelMin/limit/writeReport);
+// schema 10 参数 (M2-D008 钉死);
 // 条件必填 (agent 在 action:"list" 时可省, task/tasks 互斥) 由 execute 校验承担 (TS-003), typebox 不表达.
 const SubagentParams = Type.Object({
   agent: Type.Optional(Type.String({ description: "agent 名" })),
@@ -62,12 +75,8 @@ const SubagentParams = Type.Object({
   timeoutMs: Type.Optional(Type.Number({ description: "超时毫秒, 默认 900000" })),
   usageBudget: Type.Optional(Type.Number({ description: "累计 input+output+cacheWrite token 上限, 触顶中止" })),
   cwd: Type.Optional(Type.String({ description: "子代理工作目录, 默认继承父会话" })),
-  action: Type.Optional(Type.Union([Type.Literal("list"), Type.Literal("resume"), Type.Literal("diagnose")], { description: "缺省 = 执行" })),
-  id: Type.Optional(Type.String({ description: "resume 目标 run-id; diagnose 目标 (runId 前缀/尾段/batchRunId#index/today)" })),
-  since: Type.Optional(Type.String({ description: "diagnose 时间窗: 24h|7d|all (缺省 24h)" })),
-  levelMin: Type.Optional(Type.String({ description: "diagnose 最低日志级别: warn|error (缺省 warn)" })),
-  limit: Type.Optional(Type.Number({ description: "diagnose 扫描日志条数上限 (缺省 2000)" })),
-  writeReport: Type.Optional(Type.Boolean({ description: "diagnose 是否写报告文件到 ~/.pi/subagent_log/diagnose/" })),
+  action: Type.Optional(Type.Union([Type.Literal("list"), Type.Literal("resume")], { description: "缺省 = 执行" })),
+  id: Type.Optional(Type.String({ description: "resume 目标 run-id" })),
 });
 
 // M2-D008 条件必填校验 (typebox 不表达, 由 execute 承担): task 与 tasks 互斥且至少其一;
@@ -397,60 +406,6 @@ type ViewerUi = {
   notify(message: string, type?: "info" | "warning" | "error"): void;
 };
 
-// 显示宽度 (CJK 记 2 列) 与折行 (诊断 overlay 用).
-function dispLen2(s: string): number {
-  let n = 0;
-  for (const ch of Array.from(s)) n += (ch.codePointAt(0)! > 0x2e7f) ? 2 : 1;
-  return n;
-}
-function wrapText2(s: string, width: number): string[] {
-  if (width <= 0) return [""];
-  const out: string[] = [];
-  let cur = ""; let curLen = 0;
-  for (const ch of s) {
-    const w = dispLen2(ch);
-    if (curLen + w > width) { out.push(cur); cur = ch; curLen = w; }
-    else { cur += ch; curLen += w; }
-  }
-  if (cur) out.push(cur);
-  return out.length ? out : [""];
-}
-
-/** 诊断结果 overlay (全屏, Esc 关闭, ↑/↓ PgUp/PgDn 滚动). */
-class DiagnoseOverlay implements Component {
-  private raw: string[];
-  private scroll = 0;
-  private lastWidth = 80;
-  private tui: TUI;
-  private done: (r: null) => void;
-  constructor(raw: string[], tui: TUI, done: (r: null) => void) { this.raw = raw; this.tui = tui; this.done = done; }
-  invalidate() {}
-  private rows(): number { return Math.max(3, (this.tui.terminal.rows || 24) - 3); }
-  private wrapped(width: number): string[] { return this.raw.flatMap((l) => wrapText2(l, width)); }
-  private maxScroll(width: number): number { return Math.max(0, this.wrapped(width).length - (this.rows() - 2)); }
-  handleInput(data: string): void {
-    if (isKeyRelease(data)) return;
-    if (matchesKey(data, "escape")) { this.done(null); return; }
-    const rows = this.rows();
-    const ms = this.maxScroll(this.lastWidth);
-    if (matchesKey(data, "up")) this.scroll = Math.max(0, this.scroll - 1);
-    else if (matchesKey(data, "down")) this.scroll = Math.min(ms, this.scroll + 1);
-    else if (matchesKey(data, "pageUp")) this.scroll = Math.max(0, this.scroll - rows);
-    else if (matchesKey(data, "pageDown")) this.scroll = Math.min(ms, this.scroll + rows);
-    else return;
-    this.tui.requestRender();
-  }
-  render(width: number): string[] {
-    this.lastWidth = width > 0 ? width : 80;
-    const rows = this.rows();
-    const wrapped = this.wrapped(this.lastWidth);
-    this.scroll = Math.min(this.scroll, this.maxScroll(this.lastWidth));
-    const out = ["── subagent diagnose (Esc 关闭) ──", ""];
-    out.push(...wrapped.slice(this.scroll, this.scroll + rows - 2));
-    return out;
-  }
-}
-
 /** 打开/关闭 Session Viewer (toggle 语义; 打开 fire-and-forget, 不 await). */
 function openViewer(ui: ViewerUi): void {
   lastUi = ui;
@@ -470,29 +425,10 @@ function openViewer(ui: ViewerUi): void {
         done,
         getLive: () => ({ batches: viewerStore.getBatches() }),
         onClose: () => { viewerOpen = false; viewerClose = null; },
-        onDiagnose: (dctx) => { void runDiagnoseFor(dctx); },
       });
     },
     { overlay: true, overlayOptions: { width: "100%", anchor: "center", maxHeight: "100%", margin: { top: 1, bottom: 1 } } },
   );
-}
-
-/** 弹诊断结果 overlay (只读展示). */
-function openDiagnoseOverlay(ui: ViewerUi, content: string): void {
-  const lines = content.split("\n");
-  void ui.custom<null>(
-    (tui, _theme, _kb, done) => new DiagnoseOverlay(lines, tui, done),
-    { overlay: true, overlayOptions: { width: "100%", anchor: "center", maxHeight: "100%", margin: { top: 1, bottom: 1 } } },
-  );
-}
-
-/** viewer 内 d 键诊断: 关 viewer 后跑 diagnose 并弹结果. */
-async function runDiagnoseFor(dctx: DiagnoseContext): Promise<void> {
-  const ui = lastUi;
-  const r = await runDiagnose({ id: dctx.runId });
-  if (!ui) return;
-  if (viewerClose) { viewerClose(); viewerOpen = false; viewerClose = null; }
-  openDiagnoseOverlay(ui, r.content);
 }
 
 export default function (pi: ExtensionAPI) {
@@ -564,18 +500,6 @@ export default function (pi: ExtensionAPI) {
         } catch { /* 投影/建批失败不阻断 */ }
         onUpdate?.(partial);
       };
-
-      // ISSUE-08: action:"diagnose" — 只读诊断 (PRD §7), 不经执行模式校验层.
-      if (params?.action === "diagnose") {
-        const dr = await runDiagnose({
-          id: typeof params.id === "string" && params.id !== "" ? params.id : undefined,
-          since: params.since === "24h" || params.since === "7d" || params.since === "all" ? params.since : undefined,
-          levelMin: params.levelMin === "warn" || params.levelMin === "error" ? params.levelMin : undefined,
-          limit: typeof params.limit === "number" ? params.limit : undefined,
-          writeReport: params.writeReport === true,
-        });
-        return { content: [{ type: "text", text: dr.content }], details: dr.details };
-      }
 
       // TS-002: action:"list" (M1-D009 最小名册), agent 可省 (M2-D008).
       if (params?.action === "list") {
@@ -666,17 +590,10 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("agent-diagnose", {
-    description: "诊断 subagent 运行 (无参 = 最近 24h warn+; 可带 [runId 前缀|尾段|batch#idx|today] [24h|7d|all])",
-    handler: async (args, ctx) => {
-      const parts = args.trim().split(/\s+/).filter(Boolean);
-      const id = parts[0] || undefined;
-      const since = (parts[1] === "24h" || parts[1] === "7d" || parts[1] === "all") ? (parts[1] as "24h" | "7d" | "all") : undefined;
-      const dr = await runDiagnose({ id, since });
-      if (ctx.mode !== "tui" || !ctx.hasUI) {
-        ctx.ui.notify(dr.content.split("\n")[0] ?? "诊断完成", "info");
-        return;
-      }
-      openDiagnoseOverlay(ctx.ui as unknown as ViewerUi, dr.content);
+    description: "诊断 subagent 运行: 注入诊断提示词, 由当前会话 LLM 读落盘日志/子会话, 找出 bug 与优化点并汇报",
+    handler: async (_args, ctx) => {
+      pi.sendUserMessage(DIAGNOSE_PROMPT, { deliverAs: "followUp" });
+      if (ctx.mode === "tui" && ctx.hasUI) ctx.ui.notify("已注入 subagent 诊断请求", "info");
     },
   });
 

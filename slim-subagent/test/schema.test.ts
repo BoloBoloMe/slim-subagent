@@ -6,12 +6,12 @@ import extensionFactory from "../index.ts";
 // 接缝 (EXECUTION.md 测试策略接缝 1): fake ExtensionAPI 捕获 registerTool 注册的 schema 与描述
 // 预期值来自 M2 决策账本 (独立真相源), 非实现拷贝.
 
-// M2-D008 钉死的 10 参数 + ISSUE-08 增 diagnose 四参 (since/levelMin/limit/writeReport)
-const PINNED_PARAMS = ["agent", "task", "tasks", "model", "thinking", "timeoutMs", "usageBudget", "cwd", "action", "id", "since", "levelMin", "limit", "writeReport"];
+// M2-D008 钉死的 10 参数
+const PINNED_PARAMS = ["agent", "task", "tasks", "model", "thinking", "timeoutMs", "usageBudget", "cwd", "action", "id"];
 
 // 工具描述钉版原文 (v6: 删与 snippet 重复的委派偏置句, 只留阻塞语义 + 接口速记 + list/resume 操作语义)
 const PINNED_DESCRIPTION =
-  '调用后阻塞等待结果. 单次: agent + task; 并行: tasks[]; action:"list" 发现 agents; "resume" + id 恢复中止的运行; "diagnose" 诊断运行 (只读, 不重启).';
+  '调用后阻塞等待结果. 单次: agent + task; 并行: tasks[]; action:"list" 发现 agents; "resume" + id 恢复中止的运行.';
 
 function captureRegistration(): {
   name: string;
@@ -38,10 +38,10 @@ function captureRegistration(): {
   return captured;
 }
 
-test("TC-001 schema exposes exactly 14 pinned params", () => {
+test("TC-001 schema exposes exactly 10 pinned params", () => {
   const { parameters } = captureRegistration();
   const names = Object.keys(parameters.properties);
-  assert.equal(names.length, 14);
+  assert.equal(names.length, 10);
   assert.deepEqual(names.sort(), [...PINNED_PARAMS].sort());
 });
 

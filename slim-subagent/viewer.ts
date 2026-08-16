@@ -2,7 +2,7 @@
 // 结构: 纯函数层 (tolerant JSONL reader / 批次时间线构建 / 磁盘回补 20 批, 不依赖 pi-tui, TDD 接缝)
 // + 内存 store (onUpdate 喂入, 同 id 覆盖, 不从磁盘反推运行中状态) + SessionViewerComponent (自绘 overlay).
 // 键盘流 (D008): Tab/Shift+Tab/←/→ 循环切 tab + 数字 1-9 直跳; ↑/↓ Timeline=选批次, 子代理 tab=滚动;
-// PgUp/PgDn 翻页; Enter 仅 Timeline 确认换批; Esc/alt+v 关闭; d=diagnose 桩 (D009, ISSUE-08 接通).
+// PgUp/PgDn 翻页; Enter 仅 Timeline 确认换批; Esc/alt+v 关闭.
 // 数据源 (D011): 首 tab Timeline (上早下晚, 默认最新批次), 子代理 tab 从 session.jsonl 容忍读取
 // (损坏/未知行进 raw 不丢弃; GC 缺文件 → empty state 不崩), followLive 上翻解除回底恢复.
 // 接线 (registerCommand/快捷键/toggle/onUpdate 喂入) 归 ISSUE-08, 本文件只导出组件与 store.
@@ -510,19 +510,6 @@ export function createViewerStore(): ViewerStore {
 }
 
 // ---------------------------------------------------------------------------
-// d 键诊断桩 (D009): ISSUE-08 经 onDiagnose 回调接通 real diagnose; 当前桩仅占位.
-// ---------------------------------------------------------------------------
-
-export interface DiagnoseContext {
-  runId: string; // single: runId; parallel child: batchRunId#index
-  agent: string;
-}
-
-export function diagnoseRunStub(_ctx: DiagnoseContext): void {
-  // 占位: ISSUE-08 用 diagnose.ts 实现替换 (PRD §7, action:"diagnose").
-}
-
-// ---------------------------------------------------------------------------
 // overlay 组件 (capturing, 自绘; pi-tui 无 ScrollView/Tab 组件)
 // ---------------------------------------------------------------------------
 
@@ -677,8 +664,6 @@ export interface SessionViewerOpts {
   onClose?: () => void;
   /** 数据源读取 (store 批次集; disk 回补由接线侧预调 store.backfill) */
   getLive: () => ViewerLiveData;
-  /** d 键诊断桩 (D009): 当前 tab 子代理 runId 上下文; ISSUE-08 接通 */
-  onDiagnose?: (ctx: DiagnoseContext) => void;
 }
 
 interface TabDef {
@@ -802,17 +787,6 @@ export class SessionViewerComponent implements Component {
     if (matchesKey(data, "end")) {
       if (isConv) { state.convCursor = Math.max(0, this.batches().length - 1); this.opts.tui.requestRender(); }
       else this.scrollToBottom(current);
-      return;
-    }
-    if (matchesKey(data, "d")) {
-      // D009: d = diagnose 当前 tab 子代理 (带 runId 上下文); ISSUE-08 接通, 当前走桩
-      if (isAgentTab(current)) {
-        const b = this.confirmedBatch();
-        const agent = b?.agents.find((a) => a.id === current);
-        if (agent) {
-          this.opts.onDiagnose?.({ runId: agent.id, agent: agent.agent });
-        }
-      }
       return;
     }
   }
