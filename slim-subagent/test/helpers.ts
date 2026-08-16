@@ -68,6 +68,13 @@ export function writeAgent(home: string, fileName: string, yaml: string, body = 
   fs.writeFileSync(path.join(dir, fileName), `---\n${yaml}\n---\n${body}\n`);
 }
 
+// 写全局 settings.json (<home>/.pi/agent/settings.json) — 子代理默认 model/thinking (subagent 块) 测试用.
+export function writeSettings(home: string, settings: Record<string, unknown>): void {
+  const dir = path.join(home, CONFIG_DIR_NAME, "agent");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify(settings, null, 2) + "\n");
+}
+
 // Windows 无 POSIX 信号语义: child.kill() 直接终止进程, 子进程无法接住/记录 SIGINT/SIGTERM —
 // 依赖 fake pi 信号时序记录的用例平台跳过 (false = 不跳过).
 export const SKIP_POSIX_SIGNALS: string | false =

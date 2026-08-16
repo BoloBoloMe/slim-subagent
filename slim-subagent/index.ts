@@ -58,8 +58,8 @@ const DIAGNOSE_PROMPT =
 const TaskItem = Type.Object({
   agent: Type.String({ description: "agent 名" }),
   task: Type.String({ description: "并行任务" }),
-  model: Type.Optional(Type.String({ description: "覆盖 agent frontmatter 的 model" })),
-  thinking: Type.Optional(Type.String({ description: "覆盖 agent frontmatter 的 thinking 深度" })),
+  model: Type.Optional(Type.String({ description: "覆盖 agent 默认 model (settings.json subagent.<name>.model)" })),
+  thinking: Type.Optional(Type.String({ description: "覆盖 agent 默认 thinking 深度 (settings.json subagent.<name>.thinking)" })),
   timeoutMs: Type.Optional(Type.Number({ description: "超时毫秒" })),
   usageBudget: Type.Optional(Type.Number({ description: "token 上限" })),
 });
@@ -70,8 +70,8 @@ const SubagentParams = Type.Object({
   agent: Type.Optional(Type.String({ description: "agent 名" })),
   task: Type.Optional(Type.String({ description: "单次任务; 与 tasks 互斥" })),
   tasks: Type.Optional(Type.Array(TaskItem, { description: "parallel 任务数组, ≤8" })),
-  model: Type.Optional(Type.String({ description: "覆盖 agent frontmatter 的 model" })),
-  thinking: Type.Optional(Type.String({ description: "覆盖 agent frontmatter 的 thinking 深度 (off/minimal/low/medium/high/xhigh/max)" })),
+  model: Type.Optional(Type.String({ description: "覆盖 agent 默认 model (settings.json subagent.<name>.model)" })),
+  thinking: Type.Optional(Type.String({ description: "覆盖 agent 默认 thinking 深度 (off/minimal/low/medium/high/xhigh/max)" })),
   timeoutMs: Type.Optional(Type.Number({ description: "超时毫秒, 默认 900000" })),
   usageBudget: Type.Optional(Type.Number({ description: "累计 input+output+cacheWrite token 上限, 触顶中止" })),
   cwd: Type.Optional(Type.String({ description: "子代理工作目录, 默认继承父会话" })),
@@ -270,7 +270,7 @@ async function runParallelTasks(
       cwd,
       startedAt: new Date().toISOString(),
       tasks: resolved.map((r) => {
-        // model/thinking 取完全生效值 (item 覆盖 ?? 顶层默认 ?? agent frontmatter, 对齐 runSingleAgent effectiveModel/effectiveThinking).
+        // model/thinking 取完全生效值 (item 覆盖 ?? 顶层默认 ?? agent 默认 (settings.json subagent), 对齐 runSingleAgent effectiveModel/effectiveThinking).
         const effectiveModel = r.model ?? r.agent?.model;
         const effectiveThinking = r.thinking ?? r.agent?.thinking;
         return {

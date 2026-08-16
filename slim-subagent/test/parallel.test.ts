@@ -19,6 +19,7 @@ import {
   withHome,
   captureTool,
   writeAgent,
+  writeSettings,
   resultText,
   cleanup,
   type ExecutedResult,
@@ -337,9 +338,15 @@ test("TC-006 item model overrides batch default model", async () => {
 test("TC-007 each child gets isolated run-<idx> session dir under batch root", async () => {
   const home = makeTempHome();
   try {
-    // agent 带 model + thinking + tools: 断言批次 run.json tasks 快照含各 child agent/model/thinking/tools (调和 12).
-    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\nmodel: fake-model\nthinking: high\ntools: bash, read\n");
-    writeAgent(home, "beta.md", "name: Beta\ndescription: 处理研究任务\nmodel: fake-model-2\nthinking: low\ntools: read\n");
+    // agent 带 tools (frontmatter) + model/thinking (settings 默认): 断言批次 run.json tasks 快照含各 child agent/model/thinking/tools (调和 12).
+    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\ntools: bash, read\n");
+    writeAgent(home, "beta.md", "name: Beta\ndescription: 处理研究任务\ntools: read\n");
+    writeSettings(home, {
+      subagent: {
+        Alpha: { model: "fake-model", thinking: "high" },
+        Beta: { model: "fake-model-2", thinking: "low" },
+      },
+    });
     const { result, details } = await runParallel(home, {
       tasks: [
         { agent: "Alpha", task: "t1" },

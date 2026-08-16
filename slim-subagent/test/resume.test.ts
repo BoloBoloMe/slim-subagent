@@ -13,6 +13,7 @@ import {
   withFakePi,
   captureTool,
   writeAgent,
+  writeSettings,
   cleanup,
   resultText,
   type ExecutedResult,
@@ -38,8 +39,9 @@ async function runTool(home: string, params: Record<string, unknown>): Promise<E
 test("TC-001 resume reopens persisted session with follow-up", async () => {
   const home = makeTempHome();
   try {
-    // agent 带 model + thinking + tools (断言恢复 spawn 按 run.json 快照重建 --model/--thinking/--tools, 调和 14).
-    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\nmodel: fake-model\nthinking: high\ntools: bash, read\n");
+    // agent 带 tools (frontmatter) + model/thinking (settings 默认): 断言恢复 spawn 按 run.json 快照重建 --model/--thinking/--tools (调和 14).
+    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\ntools: bash, read\n");
+    writeSettings(home, { subagent: { Alpha: { model: "fake-model", thinking: "high" } } });
     const single = await runTool(home, { agent: "Alpha", task: "最初任务" });
     assert.equal(single.isError, undefined);
     const details = single.details as SingleDetails;

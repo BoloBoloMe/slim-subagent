@@ -15,6 +15,7 @@ import {
   withHome,
   captureTool,
   writeAgent,
+  writeSettings,
   cleanup,
   type ExecutedResult,
 } from "./helpers.ts";
@@ -62,8 +63,9 @@ async function runSingleWithBundle(
 test("TC-004 spawn argv follows pinned contract", async () => {
   const home = makeTempHome();
   try {
-    // agent 带 model + thinking + tools (M3-04 考察点 2: 有才加 --model/--thinking/--tools).
-    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\nmodel: fake-model\nthinking: high\ntools: bash, read\n");
+    // agent 带 tools (frontmatter); 默认 model/thinking 来自 settings.json subagent 块 (M3-04 考察点 2: 有才加 --model/--thinking/--tools).
+    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\ntools: bash, read\n");
+    writeSettings(home, { subagent: { Alpha: { model: "fake-model", thinking: "high" } } });
     const { result, bundle } = await runSingleWithBundle(home, {
       params: { agent: "Alpha", task: "做点事" },
     });
@@ -83,13 +85,13 @@ test("TC-004 spawn argv follows pinned contract", async () => {
       "session 应落在 per-run 目录",
     );
 
-    // agent 带 model/tools → --model/--tools 值.
+    // agent 带 model/thinking (settings 默认) → --model/--thinking 值.
     assert.ok(args.includes("--model"), "argv 应含 --model");
     assert.equal(args[args.indexOf("--model") + 1], "fake-model");
     assert.ok(args.includes("--tools"), "argv 应含 --tools");
     assert.equal(args[args.indexOf("--tools") + 1], "bash,read");
 
-    // agent 带 thinking → --thinking <level> (frontmatter 默认深度).
+    // settings 带 thinking → --thinking <level> (默认深度).
     assert.ok(args.includes("--thinking"), "argv 应含 --thinking");
     assert.equal(args[args.indexOf("--thinking") + 1], "high");
 
@@ -112,18 +114,19 @@ test("TC-004 spawn argv follows pinned contract", async () => {
   }
 });
 
-test("TC-007 params model/thinking override frontmatter defaults", async () => {
+test("TC-007 params model/thinking override settings defaults", async () => {
   const home = makeTempHome();
   try {
-    // agent 带 model + thinking (frontmatter 默认), 调用参数传不同值 (覆盖优先).
-    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\nmodel: frontmatter-model\nthinking: high\n");
+    // agent 默认 model/thinking 来自 settings (settings 默认), 调用参数传不同值 (覆盖优先).
+    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\n");
+    writeSettings(home, { subagent: { Alpha: { model: "settings-model", thinking: "high" } } });
     const { result, bundle } = await runSingleWithBundle(home, {
       params: { agent: "Alpha", task: "做点事", model: "param-model", thinking: "low" },
     });
     assert.equal(result.isError, undefined);
     const args = bundle.argv;
-    assert.equal(args[args.indexOf("--model") + 1], "param-model", "参数 model 应覆盖 frontmatter");
-    assert.equal(args[args.indexOf("--thinking") + 1], "low", "参数 thinking 应覆盖 frontmatter");
+    assert.equal(args[args.indexOf("--model") + 1], "param-model", "参数 model 应覆盖 settings 默认");
+    assert.equal(args[args.indexOf("--thinking") + 1], "low", "参数 thinking 应覆盖 settings 默认");
 
     // run.json 快照应记生效值 (resume 重建依据).
     const details = result.details as { sessionDir: string };

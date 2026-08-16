@@ -1,7 +1,7 @@
 // ISSUE-07 TS-001 切片测试: 内置 3 agents (M1-D008) — 名册可见 + spawn argv 工具面契约 + 渲染接线冒烟.
 // 接缝 (EXECUTION.md 测试策略 1/2): fake ExtensionAPI 捕获 registerTool 直调 execute;
 // fake pi 经 PI_SUBAGENT_PI_BINARY 注入 + FAKE_PI_ECHO_BUNDLE 回显 argv; 临时 HOME 隔离 user 源.
-// 覆盖: M1-D008 (explorer/worker/reviewer), 内置 agent 默认 model (frontmatter 统一 opencode-go/deepseek-v4-flash),
+// 覆盖: M1-D008 (explorer/worker/reviewer), 内置 agent 默认 model/thinking (settings.json subagent 块),
 // M1-D001(9) 渲染接线冒烟 (renderCall/renderResult 已注册且构造 pi-tui 组件不崩; 渲染效果属 TS-002 人工验证).
 // 注: 渲染段 pi-tui 组件在测试环境仅模块加载/构造, 不调用 render (停止条件: 加载失败即停).
 
@@ -11,8 +11,19 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { makeTempHome, withHome, captureTool, writeAgent, cleanup, type ExecutedResult } from "./helpers.ts";
+import { makeTempHome, withHome, captureTool, writeAgent, writeSettings, cleanup, type ExecutedResult } from "./helpers.ts";
 import { discoverAgents } from "../agents.ts";
+
+// 标准子代理 settings 块 (两台设备场景: 每设备各自一份 settings.json, 内置 agents 统一走此默认).
+function writeDefaultSubagentSettings(home: string): void {
+  writeSettings(home, {
+    subagent: {
+      explorer: { model: "opencode-go/deepseek-v4-flash", thinking: "high" },
+      reviewer: { model: "opencode-go/deepseek-v4-flash", thinking: "max" },
+      worker: { model: "opencode-go/deepseek-v4-flash", thinking: "high" },
+    },
+  });
+}
 
 const FAKE_PI = fileURLToPath(new URL("./fixtures/fake-pi.mjs", import.meta.url));
 
@@ -49,6 +60,8 @@ async function runSingleWithBundle(
 test("TC-001 builtin agents discoverable with full tools and default model", async () => {
   const home = makeTempHome();
   try {
+    // settings.json subagent 块先行 (默认 model/thinking 来源).
+    writeDefaultSubagentSettings(home);
     // 名册 (空 user 目录 → 纯内置): 3 个内置 agent 均可见且描述非空 (M1-D008).
     const text = await withHome(home, async () => {
       const tool = captureTool();
@@ -60,8 +73,8 @@ test("TC-001 builtin agents discoverable with full tools and default model", asy
       assert.ok(line, `名册应含内置 agent ${name}`);
       assert.ok(line!.slice(`- ${name}: `.length).trim() !== "", `${name} 描述非空`);
     }
-    // 数据面 (M1-D008): 均无 tools 字段 (全工具, spawn 不加 --tools); 均带默认 model (frontmatter 统一 opencode-go/deepseek-v4-flash);
-    // 默认 thinking: explorer/worker=high, reviewer=max (deepseek 仅 off/high/max 可用, off 排除); body (system prompt) 非空.
+    // 数据面 (M1-D008): 均无 tools 字段 (全工具, spawn 不加 --tools); 默认 model/thinking 来自 settings.json subagent 块
+    // (explorer/worker=high, reviewer=max); frontmatter 已不携带 model/thinking; body (system prompt) 非空.
     const builtin = discoverAgents().filter((a) => ["explorer", "reviewer", "worker"].includes(a.name));
     assert.equal(builtin.length, 3);
     for (const name of ["explorer", "reviewer", "worker"]) {
@@ -83,13 +96,14 @@ test("TC-001 builtin agents discoverable with full tools and default model", asy
 test("TC-002 explorer spawns without --tools and with default --model/--thinking", async () => {
   const home = makeTempHome();
   try {
+    writeDefaultSubagentSettings(home);
     const { result, bundle } = await runSingleWithBundle(home, { agent: "explorer", task: "探查项目结构" });
     assert.equal(result.isError, undefined);
     const args = bundle.argv;
     assert.ok(!args.includes("--tools"), "explorer 无 tools 字段 → 省略 --tools (全工具)");
-    assert.ok(args.includes("--model"), "内置 agent 带 frontmatter model → argv 含 --model");
-    assert.equal(args[args.indexOf("--model") + 1], "opencode-go/deepseek-v4-flash", "默认 model = frontmatter 值");
-    assert.ok(args.includes("--thinking"), "explorer 带 frontmatter thinking → argv 含 --thinking");
+    assert.ok(args.includes("--model"), "settings subagent 块带 model → argv 含 --model");
+    assert.equal(args[args.indexOf("--model") + 1], "opencode-go/deepseek-v4-flash", "默认 model = settings 值");
+    assert.ok(args.includes("--thinking"), "settings subagent 块带 thinking → argv 含 --thinking");
     assert.equal(args[args.indexOf("--thinking") + 1], "high", "explorer 默认 thinking = high");
     assert.ok(!args.includes("-e"), "临时 HOME 无 resolve-skill 扩展 → argv 无 -e (静默跳过)");
     assert.ok(bundle.prompt && bundle.prompt.content.trim().length > 0, "explorer system prompt 应注入");
@@ -123,14 +137,44 @@ test("TC-002a resolve-skill extension is injected via -e when present in agent d
 test("TC-003 worker spawns with no --tools and default --model/--thinking", async () => {
   const home = makeTempHome();
   try {
+    writeDefaultSubagentSettings(home);
     const { result, bundle } = await runSingleWithBundle(home, { agent: "worker", task: "写一个文件" });
     assert.equal(result.isError, undefined);
     const args = bundle.argv;
     assert.ok(!args.includes("--tools"), "worker 无 tools 字段 → argv 无 --tools (全工具语义)");
-    assert.ok(args.includes("--model"), "worker frontmatter model → argv 含 --model");
+    assert.ok(args.includes("--model"), "settings subagent 块带 model → argv 含 --model");
     assert.equal(args[args.indexOf("--model") + 1], "opencode-go/deepseek-v4-flash");
-    assert.ok(args.includes("--thinking"), "worker frontmatter thinking → argv 含 --thinking");
+    assert.ok(args.includes("--thinking"), "settings subagent 块带 thinking → argv 含 --thinking");
     assert.equal(args[args.indexOf("--thinking") + 1], "high", "worker 默认 thinking = high");
+  } finally {
+    cleanup(home);
+  }
+});
+
+// 无 settings subagent 块 → 无默认 model/thinking: argv 不带 --model/--thinking (走 pi 默认).
+test("TC-003a no subagent settings means no --model/--thinking in argv", async () => {
+  const home = makeTempHome();
+  try {
+    const { result, bundle } = await runSingleWithBundle(home, { agent: "explorer", task: "探查" });
+    assert.equal(result.isError, undefined);
+    assert.ok(!bundle.argv.includes("--model"), "无 settings 配置 → 不加 --model");
+    assert.ok(!bundle.argv.includes("--thinking"), "无 settings 配置 → 不加 --thinking");
+  } finally {
+    cleanup(home);
+  }
+});
+
+// frontmatter 遗留 model/thinking 静默忽略 (单一来源 = settings.json): settings 值生效, frontmatter 值不干扰.
+test("TC-003b leftover frontmatter model/thinking is ignored", async () => {
+  const home = makeTempHome();
+  try {
+    writeSettings(home, { subagent: { Alpha: { model: "settings-model", thinking: "low" } } });
+    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\nmodel: stale-frontmatter-model\nthinking: max\n");
+    const { result, bundle } = await runSingleWithBundle(home, { agent: "Alpha", task: "做点事" });
+    assert.equal(result.isError, undefined);
+    const args = bundle.argv;
+    assert.equal(args[args.indexOf("--model") + 1], "settings-model", "model 应取 settings 值 (frontmatter 遗留忽略)");
+    assert.equal(args[args.indexOf("--thinking") + 1], "low", "thinking 应取 settings 值 (frontmatter 遗留忽略)");
   } finally {
     cleanup(home);
   }

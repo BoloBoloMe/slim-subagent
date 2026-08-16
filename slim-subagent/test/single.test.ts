@@ -14,6 +14,7 @@ import {
   withHome,
   captureTool,
   writeAgent,
+  writeSettings,
   resultText,
   cleanup,
   type ExecutedResult,
@@ -62,7 +63,8 @@ async function runSingle(home: string, scenario: string, bundlePath?: string): P
 test("TC-001 single run returns final text and usage details", async () => {
   const home = makeTempHome();
   try {
-    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\nmodel: fake-model\n");
+    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\n");
+    writeSettings(home, { subagent: { Alpha: { model: "fake-model" } } });
     // review 修复项 3: 经 fake-pi bundle 回显记录本次运行创建的精确 temp 目录名 (prompt 文件所在目录),
     // 断言该目录已清理 — 不做 /tmp 全量对比 (本机他进程/并行测试文件可能并发建删同前缀目录, 全量对比偶发假失败).
     const bundlePath = path.join(home, "echo-bundle.json");

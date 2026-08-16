@@ -1483,8 +1483,8 @@ export function assembleSingleResult(
 export async function runSingleAgent(opts: {
   agent: AgentConfig;
   task: string;
-  model?: string; // 覆盖 agent frontmatter (M2-D008 参数 4)
-  thinking?: string; // 思考深度覆盖 agent frontmatter (pi --thinking: off/minimal/low/medium/high/xhigh/max)
+  model?: string; // 覆盖 agent 默认 model (settings.json subagent.<name>.model, M2-D008 参数 4)
+  thinking?: string; // 思考深度覆盖 agent 默认 (pi --thinking: off/minimal/low/medium/high/xhigh/max)
   cwd: string; // 子代理工作目录, 默认继承父会话 (M2-D008 参数 7)
   timeoutMs?: number; // ISSUE-03: 超时毫秒, 正整数, 缺省 900000 (15min)
   usageBudget?: number; // ISSUE-04: token 上限 (纯 number 正数, 触顶中止; 非法值校验报错)
