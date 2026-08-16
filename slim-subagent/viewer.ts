@@ -1001,7 +1001,7 @@ export class SessionViewerComponent implements Component {
     const ts = state.tabs[agentId] ?? initialTabState(true);
     segs.push(ts.follow ? "follow 开" : "已暂停 follow");
     const ctx = agent.contextPercent;
-    segs.push(ctx !== undefined && ctx !== null ? `ctx ${Math.round(ctx)}%` : "ctx —");
+    segs.push(ctx !== undefined && ctx !== null ? `ctx ${Math.round(ctx * 10) / 10}%` : "ctx —");
     if (agent.usageBudgetExplicit !== undefined) segs.push(`cap ${fmtT(agent.usageBudgetExplicit)}`);
     else if (agent.budgetAuto) segs.push("auto 70%");
     if (agent.hint) segs.push(`hint "${truncate(agent.hint, 32)}"`);

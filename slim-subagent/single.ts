@@ -880,7 +880,7 @@ export async function runProcess(
       if (result.budgetExceeded) return; // ISSUE-04: 先触发者胜 (budget 已触顶, timeout 不再发)
       result.timedOut = true;
       // L19 (error): timeout 触发 (timedOut 置真处).
-      logEvent({ level: "error", event: "timeout.fired", mode: "single", agent: result.agent, data: { timeoutMs: effectiveTimeout } });
+      logEvent({ level: "error", event: "timeout.fired", mode: "single", agent: result.agent, timeoutMsExplicit: timeoutMs, data: { timeoutMs: effectiveTimeout } });
       result.error = `Subagent timed out after ${effectiveTimeout}ms.`;
       startAbortSequence();
     }, effectiveTimeout);

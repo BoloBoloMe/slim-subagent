@@ -87,7 +87,7 @@ function elapsedStr(node: RunNode): string {
 /** 子代理口径 ctx (PRD §2.9): 有数据必显, 未知 `—` 不伪造. */
 function ctxStr(node: RunNode): string {
   if (node.contextPercent === undefined || node.contextPercent === null) return "ctx —";
-  return `ctx ${node.contextPercent}%`;
+  return `ctx ${Math.round(node.contextPercent * 10) / 10}%`;
 }
 
 function isTerminal(status: DisplayStatus): boolean {
