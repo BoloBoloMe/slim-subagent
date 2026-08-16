@@ -17,7 +17,7 @@
 - `../../milestone-08/DECISIONS.md`: D001 (diagnose.ts), D002 (只新增文件), D003 (target 解析单测)
 
 ## 允许范围
-新增 `slim-subagent/diagnose.ts`, `test/diagnose*.test.ts`; index.ts 仅 schema/action 注册 (若与并行纪律冲突, 留桩归 ISSUE-08).
+新增 `slim-subagent/diagnose.ts`, `test/diagnose*.test.ts`. **schema/action 注册不在本片** — 留公开入口函数, index.ts 注册归 ISSUE-08 (并行纪律, M08 D002).
 
 ## 禁止范围
 不自动修复/不重启 run/不改代码 (PRD §7.2); 不动 viewer.ts/card.ts; 不用 list/resume 伪装诊断.
@@ -48,6 +48,7 @@
 - [ ] PRD §10 验收 11-14
 - [ ] target 解析四形态 + 歧义列候选
 - [ ] findings 覆盖 §7.2 类别清单
+- [ ] diagnose.ts 暴露供 index.ts 注册的公开入口 (无桩逻辑残留)
 - [ ] node --test 全绿不回归
 
 ## 被阻塞于

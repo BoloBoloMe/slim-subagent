@@ -24,7 +24,7 @@
 
 ## 代码定位提示
 - 原型直接对照: `docs/changes/subagent-panel/milestone-05/prototype/index.ts` (cCard/cDetailLines/renderSegLine/spinner 机制 + RunCardComponent) — 允许搬运逻辑, 禁止搬运原型债 (无测试/错误处理从简的部分重写)
-- context.invalidate: pi 包 tool-execution.js:89-107; types.d.ts:376
+- context.invalidate: pi 包 tool-execution.js:89-107; types.d.ts:321 (ToolRenderContext)
 - 现有渲染: index.ts renderCall/renderResult 现状
 
 ## TDD 切片

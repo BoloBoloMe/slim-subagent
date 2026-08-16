@@ -23,7 +23,7 @@ runParallelTasks 为每个 child 挂 onUpdate, per-child RunNode 快照 (activeT
 不动渲染/投影; 不改并行调度语义 (硬上限 8/硬并发 4/不 fail-fast).
 
 ## 代码定位提示
-- runParallelTasks: index.ts:265-285 (聚合 onUpdate, completedFlags 计数); `progress: []` 硬编码 index.ts:275
+- runParallelTasks: index.ts:265-285 (聚合 onUpdate, completedFlags 计数); `progress: []` 硬编码 index.ts:281
 - child spawn/onUpdate 参考 single.ts:862-974 的 emitUpdate 触发点分布
 - 对照原型: `docs/changes/subagent-panel/milestone-04/prototype/replay.ts` parallel-pending 场景
 

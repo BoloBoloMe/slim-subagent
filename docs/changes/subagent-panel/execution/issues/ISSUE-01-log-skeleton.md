@@ -17,10 +17,10 @@
 - `../../milestone-07/DECISIONS.md`: D012 (测试策略)
 
 ## 允许范围
-新增 `slim-subagent/log.ts`, `slim-subagent/test/log*.test.ts`; index.ts 仅挂 session_start GC 触发点.
+新增 `slim-subagent/log.ts`, `slim-subagent/test/log*.test.ts`; `index.ts`, `single.ts`, `agents.ts` 仅加日志插桩 (挂 L01-L10/L25-L27/L40-L44, 不改执行逻辑); index.ts 挂 session_start GC 触发点.
 
 ## 禁止范围
-不改 single.ts/resume.ts 执行逻辑; 不实现 L11-L39 (ISSUE-02); 不写 Panel/Viewer 任何代码.
+不改 single.ts/resume.ts 执行逻辑; 不实现 L11-L39 (ISSUE-02)
 
 ## 代码定位提示
 - 入口: `slim-subagent/index.ts` (session_start 钩子现状), `slim-subagent/session-lease.ts` (活跃 lease 判定, GC 跳过依据)
@@ -48,7 +48,7 @@ GC 误删活跃 run 引用文件是最大风险 — lease 判定复用 session-l
 - [ ] 按日 JSONL 写入, level 过滤生效
 - [ ] 脱敏: task/prompt 不落原文, taskHash 稳定
 - [ ] 7 日 GC + lease 跳过 + L42
-- [ ] L01-L10/L25-L27/L40-L44 挂载
+- [ ] L01-L10/L25-L27/L40-L44 挂载 (含 L43 GC 点 try/catch)
 - [ ] node --test 全绿
 
 ## 被阻塞于

@@ -16,7 +16,8 @@
 - 禁止 queued/starting/blocked/waiting_input 一等状态 (PRD §3)
 
 ## 完成定义
-- `cd slim-subagent && node --test test/**` 全绿 (既有 3588 行测试不回归 + 新增)
+- `cd slim-subagent && node --test test/**` 全绿 (既有测试不回归 + 新增)
+- 提交约定: 每 issue 1 个 `feat: <范围> <简述>` (代码+测试), 提交前全绿; 文档单独 `doc:` (M08 D004)
 - 每 issue 的 pty 冒烟一轮全绿 (pty 持续 drain, M07 F005)
 - ISSUE-09 用户验收通过
 

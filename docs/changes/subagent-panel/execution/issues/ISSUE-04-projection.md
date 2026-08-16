@@ -25,6 +25,7 @@
 ## 代码定位提示
 - 契约: PRD §3 全文; 原型参考 `docs/changes/subagent-panel/milestone-04/prototype/types.ts` (RunNode 类型) 与 `replay.ts` 快照生成
 - 调用侧快照捕获点: index.ts 工具 execute 入参 (model/timeoutMs/usageBudget/tasks[i])
+- 节点键规则 (M02 D004/R5): 投影取键 = toolCallId + 顶层 mode + runId/index, 防节点键漂移
 - run.json 形状: `~/.pi/agent/slim-subagent/sessions/<runId>/run.json` (M02 resume 口径)
 
 ## TDD 切片

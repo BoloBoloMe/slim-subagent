@@ -117,7 +117,7 @@
 - D001, D002, D003, D004, D005 → ISSUE-05
 - D006 → 无执行 issue (范围排除, PRD §11)
 - D007, D008, D011 → ISSUE-06
-- D009 → ISSUE-07, ISSUE-08
+- D009 → ISSUE-06 (d 键桩), ISSUE-07, ISSUE-08
 - D010 → 无执行 issue (禁令, 全局禁止范围)
 - D012 → 全部 (测试策略)
 - D013 → ISSUE-03
