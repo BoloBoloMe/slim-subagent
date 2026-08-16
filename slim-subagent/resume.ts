@@ -23,6 +23,8 @@ import {
 import type { SingleDetails, StreamUpdateCallback } from "./single.ts";
 import { acquireSessionLease, releaseSessionLease, isLeaseActive } from "./session-lease.ts";
 import type { LeaseOwner } from "./session-lease.ts";
+// ISSUE-01: 日志插桩 (仅加日志调用, 不改执行逻辑; 写失败静默吞, 见 log.ts).
+import { logEvent } from "./log.ts";
 
 // M2-D005: GC 按龄 7 天 (对齐旧 artifacts cleanupDays=7).
 const GC_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -240,7 +242,9 @@ export function runSessionGc(): void {
   let runIds: string[];
   try {
     runIds = fs.readdirSync(root);
-  } catch {
+  } catch (e) {
+    // L43 (error, scan): sessions 根不存在/读取失败 → 记日志后照旧 return (无事可做).
+    logEvent({ level: "error", event: "gc.failed", errorCode: "scan", errorMessage: (e as Error).message });
     return; // sessions 根不存在 → 无事可做
   }
   for (const runId of runIds) {
@@ -254,10 +258,17 @@ export function runSessionGc(): void {
       if (Date.now() - startedAt <= GC_AGE_MS) continue; // 龄期内 → 保留
       // 锁豁免 (TS-002): 有活跃锁 (owner pid 活) 的 run 跳过.
       const relSessionFile = typeof runJson.sessionFile === "string" && runJson.sessionFile !== "" ? runJson.sessionFile : undefined;
-      if (relSessionFile && isLeaseActive(path.join(sessionDir, relSessionFile))) continue;
+      if (relSessionFile && isLeaseActive(path.join(sessionDir, relSessionFile))) {
+        // L42 (warn): 活跃锁豁免 → 跳过保留 (延续既有继续语义).
+        logEvent({ level: "warn", event: "gc.skip.active_lease", data: { runId, path: sessionDir } });
+        continue;
+      }
       fs.rmSync(sessionDir, { recursive: true, force: true });
-    } catch {
-      // 坏 run.json → 跳过该 run
+      // L41 (info): 按龄删除成功.
+      logEvent({ level: "info", event: "gc.delete.ok", data: { runId, path: sessionDir } });
+    } catch (e) {
+      // L43 (error, delete): 坏 run.json/删除异常 → 跳过该 run (不中断整轮 GC).
+      logEvent({ level: "error", event: "gc.failed", errorCode: "delete", errorMessage: (e as Error).message });
     }
   }
 }

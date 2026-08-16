@@ -19,6 +19,8 @@ import { fileURLToPath } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { AgentConfig } from "./agents.ts";
+// ISSUE-01: 日志插桩 (仅加日志调用, 不改执行逻辑; 写失败静默吞, 见 log.ts).
+import { logEvent } from "./log.ts";
 
 // M3-02 考察点 2: message_end 事件 message 的解析所需最小面 (事件流来自 JSON.parse, 结构宽松).
 interface AgentMessageLike {
@@ -346,18 +348,28 @@ export function getPiInvocation(
 ): { command: string; args: string[] } {
   const execPath = deps?.execPath ?? process.execPath;
   const argv1 = deps?.argv1 ?? process.argv[1];
+  // L08 (debug): 命中寻址级 + 命令 basename (只插桩, 不改寻址返回值/顺序; debug 默认不落盘).
+  const noteResolved = (level: string, command: string): void =>
+    logEvent({ level: "debug", event: "pi.invocation.resolved", data: { level, command: path.basename(command) } });
 
   // (a) env 覆盖 (PI_SUBAGENT_PI_BINARY) — 最高优先, 测试注入 fake pi 即走此级.
   const envOverride = process.env.PI_SUBAGENT_PI_BINARY?.trim();
   if (envOverride) {
     // Windows 无 shebang 机制, .mjs/.js/.cjs 脚本不可直接 spawn → 用当前 node 执行 (POSIX 下行为等价).
-    if (/\.(m|c)?js$/i.test(envOverride)) return { command: execPath, args: [envOverride, ...args] };
+    if (/\.(m|c)?js$/i.test(envOverride)) {
+      noteResolved("env", execPath);
+      return { command: execPath, args: [envOverride, ...args] };
+    }
+    noteResolved("env", envOverride);
     return { command: envOverride, args };
   }
 
   // (b) standalone 独立 pi 可执行.
   const execName = path.basename(execPath).toLowerCase();
-  if (/^pi(\.exe)?$/i.test(execName)) return { command: execPath, args };
+  if (/^pi(\.exe)?$/i.test(execName)) {
+    noteResolved("standalone", execPath);
+    return { command: execPath, args };
+  }
 
   // (c) argv[1] CLI 脚本 (pi 以 node 加载扩展时 argv[1] 即 pi CLI 入口).
   // 规格 (M3-04 考察点 1): realpath 后仍 runnable 且向上找 package.json name 匹配才命中, 否则落下一级.
@@ -365,6 +377,7 @@ export function getPiInvocation(
     try {
       const canonical = fs.realpathSync(argv1);
       if (isRunnableNodeScript(canonical) && findPiPackageRootFromEntry(canonical)) {
+        noteResolved("cli", execPath);
         return { command: execPath, args: [canonical, ...args] };
       }
     } catch {
@@ -374,9 +387,13 @@ export function getPiInvocation(
 
   // (d) 包 bin 解析兜底.
   const packageBin = resolvePiPackageBin();
-  if (packageBin) return { command: execPath, args: [packageBin, ...args] };
+  if (packageBin) {
+    noteResolved("package-bin", execPath);
+    return { command: execPath, args: [packageBin, ...args] };
+  }
 
   // PATH 兜底.
+  noteResolved("path", "pi");
   return { command: "pi", args };
 }
 
@@ -814,15 +831,20 @@ export async function runProcess(
     const emitUpdate = (textOverride?: string) => {
       if (!onUpdate) return;
       const text = textOverride ?? (getFinalOutput(result.messages) || "(running...)");
-      onUpdate({
-        content: [{ type: "text", text }],
-        details: {
-          mode: "single",
-          results: [result],
-          // progress 快照 (考察点 6: 深拷贝 + 有界截断 ≤10 recentTools / ≤50 recentOutput), 防闭包引用被后续事件污染.
-          progress: [{ recentTools: recentTools.slice(-MAX_RECENT_TOOLS), recentOutput: recentOutput.slice(-MAX_RECENT_OUTPUT) }],
-        },
-      });
+      try {
+        onUpdate({
+          content: [{ type: "text", text }],
+          details: {
+            mode: "single",
+            results: [result],
+            // progress 快照 (考察点 6: 深拷贝 + 有界截断 ≤10 recentTools / ≤50 recentOutput), 防闭包引用被后续事件污染.
+            progress: [{ recentTools: recentTools.slice(-MAX_RECENT_TOOLS), recentOutput: recentOutput.slice(-MAX_RECENT_OUTPUT) }],
+          },
+        });
+      } catch (e) {
+        // L44 (warn): onUpdate 回调抛错 → 记日志后回退 (吞掉, 不阻断执行管线).
+        logEvent({ level: "warn", event: "render.update.failed", data: { onUpdate: true, error: (e as Error).message } });
+      }
     };
     emitUpdate(); // spawn 后立即 1 次 (初始 "(running...)", TUI 即时反馈 — 旧码保留项)
 
@@ -1097,7 +1119,28 @@ export async function runProcess(
       if (result.exitCode === 0 && !result.error && !result.finalOutput) {
         result.exitCode = 1;
         result.error = EMPTY_OUTPUT_ERROR;
+        // L26 (error): exit 0 但无输出 → 空输出判定 (runId 经前后事件关联, runProcess 无 runId 上下文).
+        logEvent({ level: "error", event: "result.empty_output", agent: result.agent, data: { exitCode: 1 } });
       }
+      // L25 (info): settle 收尾完成 — exitCode/stopReason/processSignal/usage 摘要.
+      logEvent({
+        level: "info",
+        event: "process.close.settled",
+        agent: result.agent,
+        data: {
+          exitCode: result.exitCode,
+          stopReason: result.stopReason,
+          processSignal: result.processSignal,
+          usage: {
+            input: result.usage.input,
+            output: result.usage.output,
+            cacheWrite: result.usage.cacheWrite,
+            cost: result.usage.cost,
+            turns: result.usage.turns,
+          },
+        },
+      });
+
       emitUpdate(result.finalOutput || result.error || "(no output)"); // close 后最终 1 次 (考察点 6)
       resolve(result);
     };
@@ -1114,6 +1157,8 @@ export async function runProcess(
     proc.on("close", (code, signal) => settle(code, signal));
     proc.on("error", (err) => {
       result.error = err.message; // spawn 失败 (如 ENOENT): error.message + exit 1 (M3-01 考察点 6)
+      // L10 (fatal): spawn 失败 (ENOENT 等) — 记错误消息 + exitCode 1.
+      logEvent({ level: "fatal", event: "single.spawn.failed", agent: result.agent, errorMessage: err.message, data: { exitCode: 1 } });
       settle(1, null);
     });
 
@@ -1264,6 +1309,28 @@ export function assembleSingleResult(
       })
     : text;
 
+  // L27 (info): single 结果回收完成 — runId/isError/stopReason/usage 摘要/contextPercent.
+  // 注意: resume 管线也复用本函数 (resume L39 归 ISSUE-02, 本 ISSUE 不重复标记).
+  logEvent({
+    level: "info",
+    event: "single.result.final",
+    mode: "single",
+    runId: opts.runId,
+    agent: opts.agent,
+    contextPercent,
+    data: {
+      isError,
+      exitCode: result.exitCode,
+      stopReason: result.stopReason,
+      usage: {
+        input: result.usage.input,
+        output: result.usage.output,
+        cacheWrite: result.usage.cacheWrite,
+        cost: result.usage.cost,
+        turns: result.usage.turns,
+      },
+    },
+  });
   return {
     content: [{ type: "text", text: textOut }],
     details: {
@@ -1339,10 +1406,27 @@ export async function runSingleAgent(opts: {
     ? { sessionDir: opts.sessionDir, sessionFile: path.join(opts.sessionDir, "session.jsonl") }
     : sessionPaths(runId);
   fs.mkdirSync(path.dirname(sessionFile), { recursive: true }); // run-<idx>/ 目录; session.jsonl 由 pi (fake) 写盘
+  // L05 (info): runId/sessionDir 计算完成 (parallel child 经 skipRunJson 标记 child=true).
+  logEvent({
+    level: "info",
+    event: "run.id.created",
+    mode: "single",
+    runId,
+    agent: opts.agent.name,
+    data: { sessionDir, child: opts.skipRunJson === true },
+  });
   const effectiveModel = opts.model ?? opts.agent.model;
   const effectiveThinking = opts.thinking ?? opts.agent.thinking;
   if (!opts.skipRunJson) {
-    writeRunJson({ runId, agent: opts.agent.name, model: effectiveModel, thinking: effectiveThinking, cwd: opts.cwd, startedAt: new Date().toISOString(), tools: opts.agent.tools }, sessionDir);
+    try {
+      writeRunJson({ runId, agent: opts.agent.name, model: effectiveModel, thinking: effectiveThinking, cwd: opts.cwd, startedAt: new Date().toISOString(), tools: opts.agent.tools }, sessionDir);
+      // L06 (info): run.json 原子写成功.
+      logEvent({ level: "info", event: "run.json.write.ok", mode: "single", runId, agent: opts.agent.name, data: { sessionFile } });
+    } catch (e) {
+      // L07 (error): run.json 写失败 → 记日志后继续 rethrow (不改现有执行语义).
+      logEvent({ level: "error", event: "run.json.write.failed", mode: "single", runId, agent: opts.agent.name, errorMessage: (e as Error).message });
+      throw e;
+    }
   }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
@@ -1354,6 +1438,18 @@ export async function runSingleAgent(opts: {
       fs.writeFileSync(promptFile, opts.agent.systemPrompt, { encoding: "utf-8", mode: 0o600 }); // 0600 (M3-04 考察点 2)
     }
     const args = buildPiArgs({ agent: opts.agent, task: opts.task, model: effectiveModel, thinking: effectiveThinking, sessionFile, promptFile, tmpDir });
+    // L09 (info): 即将 spawn (runProcess 调用前) — agent/model/runId/显式 timeoutMs/生效 usageBudget+budgetAuto.
+    logEvent({
+      level: "info",
+      event: "single.spawn.start",
+      mode: "single",
+      runId,
+      agent: opts.agent.name,
+      model: effectiveModel,
+      timeoutMsExplicit: opts.timeoutMs,
+      usageBudgetExplicit: usageBudget,
+      data: { budgetAuto: opts.budgetAuto },
+    });
     const result = await runProcess(opts.agent, opts.task, args, opts.cwd, opts.timeoutMs, opts.signal, usageBudget, opts.onUpdate);
 
     return assembleSingleResult(result, {

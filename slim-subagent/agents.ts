@@ -7,6 +7,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+// ISSUE-01: 日志插桩 (仅加日志调用, 不改执行逻辑; 写失败静默吞, 见 log.ts).
+import { logEvent } from "./log.ts";
 
 export interface AgentConfig {
   name: string;
@@ -77,12 +79,18 @@ function loadAgentsFromDir(dir: string, source: "builtin" | "user"): AgentConfig
 // EXECUTION.md 调和 16: 同名 agent 冲突 = user 覆盖内置 (对齐官方示例 agentMap 去重语义);
 // list 只列一条, spawn find 解析到 user 版 (tools/model/prompt 取 user 定义).
 export function discoverAgents(): AgentConfig[] {
-  const extensionDir = path.dirname(fileURLToPath(import.meta.url));
-  const builtin = loadAgentsFromDir(path.join(extensionDir, "agents"), "builtin");
-  const user = loadAgentsFromDir(path.join(getAgentDir(), "agents"), "user");
-  const byName = new Map<string, AgentConfig>();
-  for (const a of [...builtin, ...user]) byName.set(a.name, a);
-  return [...byName.values()];
+  try {
+    const extensionDir = path.dirname(fileURLToPath(import.meta.url));
+    const builtin = loadAgentsFromDir(path.join(extensionDir, "agents"), "builtin");
+    const user = loadAgentsFromDir(path.join(getAgentDir(), "agents"), "user");
+    const byName = new Map<string, AgentConfig>();
+    for (const a of [...builtin, ...user]) byName.set(a.name, a);
+    return [...byName.values()];
+  } catch (e) {
+    // L04 (error): 发现失败 → 记日志后 rethrow (不改现有行为; 内部 loadAgentsFromDir 静默吞保持原样).
+    logEvent({ level: "error", event: "agents.discover.failed", errorMessage: (e as Error).message });
+    throw e;
+  }
 }
 
 // M1-D009 最小 list: 每行 `- <name>: <description>`, 按名排序, 空则 `- (none)` (M3-04 考察点 4).

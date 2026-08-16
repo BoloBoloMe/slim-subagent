@@ -22,6 +22,8 @@ import type { AgentConfig } from "./agents.ts";
 import { runSingleAgent, makeRunId, sessionRootDir, resolveEffectiveUsageBudget } from "./single.ts";
 import type { SingleDetails, StreamUpdateCallback, Usage } from "./single.ts";
 import { runResume, runSessionGc } from "./resume.ts";
+// ISSUE-01: 日志插桩 (仅加日志调用, 不改执行逻辑; 写失败静默吞, 见 log.ts).
+import { logEvent, taskPreviewOf, runLogGc } from "./log.ts";
 
 // ISSUE-05: 官方示例 index.ts:33-34 同款常量 (M1-D001(2): 并发 4 / 最大 8, 硬编码不可调).
 const MAX_PARALLEL_TASKS = 8;
@@ -434,7 +436,13 @@ function renderParallelComponent(results: ParallelChildResult[], expanded: boole
 export default function (pi: ExtensionAPI) {
   // ISSUE-06 TS-003: session_start 挂点 — 按龄 GC 扫一次 (M2-D005, pi docs/extensions.md 事件表;
   // 测试直接调 runSessionGc hook 函数, 不依赖 pi 内部触发).
-  (pi as { on?: (event: "session_start", handler: () => void) => void }).on?.("session_start", () => runSessionGc());
+  (pi as { on?: (event: "session_start", handler: () => void) => void }).on?.("session_start", () => {
+    // L40 (info): session_start 挂点 — 先扫 run 会话 GC, 后扫日志 GC (均 7 日按龄, 各自的 L41/L42/L43).
+    logEvent({ level: "info", event: "gc.sessions.start" });
+    runSessionGc();
+    logEvent({ level: "info", event: "gc.logs.start" });
+    runLogGc();
+  });
 
   pi.registerTool({
     name: "subagent",
@@ -466,10 +474,30 @@ export default function (pi: ExtensionAPI) {
         | null
         | undefined;
 
+      // L01 (info): 工具调用开始 — 只记脱敏 taskPreview, 不落完整 task; mode 按 action/tasks 推导.
+      const execMode: "single" | "parallel" | "list" | "resume" =
+        params?.action === "list" ? "list"
+        : params?.action === "resume" ? "resume"
+        : Array.isArray(params?.tasks) && (params.tasks as unknown[]).length > 0 ? "parallel"
+        : "single";
+      logEvent({
+        level: "info",
+        event: "tool.execute.start",
+        mode: execMode,
+        toolCallId: _toolCallId,
+        agent: typeof params?.agent === "string" ? params.agent : undefined,
+        taskPreview: typeof params?.task === "string" ? taskPreviewOf(params.task) : undefined,
+        timeoutMsExplicit: typeof params?.timeoutMs === "number" ? params.timeoutMs : undefined,
+        usageBudgetExplicit: typeof params?.usageBudget === "number" ? params.usageBudget : undefined,
+      });
+
       // TS-002: action:"list" (M1-D009 最小名册), agent 可省 (M2-D008).
       if (params?.action === "list") {
+        const listAgents = discoverAgents();
+        // L03 (info): list 发现成功 — count = 名册条数 (行为等价, 仅多一步中间量).
+        logEvent({ level: "info", event: "agents.list.ok", mode: "list", data: { count: listAgents.length } });
         return {
-          content: [{ type: "text", text: formatAgentList(discoverAgents()) }],
+          content: [{ type: "text", text: formatAgentList(listAgents) }],
           details: {},
         };
       }
@@ -482,6 +510,14 @@ export default function (pi: ExtensionAPI) {
       const agents = discoverAgents();
       const validationError = validateExecuteParams(params, agents);
       if (validationError) {
+        // L02 (warn): 参数校验失败 — 只记脱敏 preview + 报错文本, 照旧返回错误结果.
+        logEvent({
+          level: "warn",
+          event: "tool.execute.validate_failed",
+          agent: typeof params?.agent === "string" ? params.agent : undefined,
+          taskPreview: typeof params?.task === "string" ? taskPreviewOf(params.task) : undefined,
+          errorMessage: validationError,
+        });
         return { content: [{ type: "text", text: validationError }], details: {}, isError: true };
       }
 
@@ -515,15 +551,27 @@ export default function (pi: ExtensionAPI) {
     },
     // ISSUE-07: TUI 最小渲染 (M1-D001(9)) — renderCall 摘要 + renderResult 折叠/展开 + usage 统计.
     renderCall(args, theme) {
-      return renderCallComponent(args as { agent?: unknown; task?: unknown; tasks?: unknown[] }, theme);
+      try {
+        return renderCallComponent(args as { agent?: unknown; task?: unknown; tasks?: unknown[] }, theme);
+      } catch (e) {
+        // L44 (warn): renderCall 异常 → 记日志 + 最简占位 (不影响主流程/返回).
+        logEvent({ level: "warn", event: "render.update.failed", errorMessage: (e as Error).message });
+        return new Text("subagent call", 0, 0);
+      }
     },
     renderResult(result, { expanded }, theme) {
-      const details = result.details as { mode?: string; results?: ParallelChildResult[]; usage?: Usage; exitCode?: number; stopReason?: string; errorMessage?: string; model?: string } | undefined;
-      if (details?.mode === "parallel" && Array.isArray(details.results)) return renderParallelComponent(details.results, expanded, theme); // parallel 每任务分块
-      // single/默认 (final details = SingleDetails 无 agent; 流式 partial 同走 content 文本).
-      const text = (result.content[0] as { type?: string; text?: string } | undefined)?.type === "text" ? (result.content[0] as { text: string }).text : "(no output)";
-      const isError = result.isError === true || (typeof details?.exitCode === "number" && details.exitCode !== 0);
-      return renderSingleComponent({ agent: "subagent", isError, stopReason: details?.stopReason, errorMessage: details?.errorMessage, output: text, usage: details?.usage, model: details?.model }, expanded, theme);
+      try {
+        const details = result.details as { mode?: string; results?: ParallelChildResult[]; usage?: Usage; exitCode?: number; stopReason?: string; errorMessage?: string; model?: string } | undefined;
+        if (details?.mode === "parallel" && Array.isArray(details.results)) return renderParallelComponent(details.results, expanded, theme); // parallel 每任务分块
+        // single/默认 (final details = SingleDetails 无 agent; 流式 partial 同走 content 文本).
+        const text = (result.content[0] as { type?: string; text?: string } | undefined)?.type === "text" ? (result.content[0] as { text: string }).text : "(no output)";
+        const isError = result.isError === true || (typeof details?.exitCode === "number" && details.exitCode !== 0);
+        return renderSingleComponent({ agent: "subagent", isError, stopReason: details?.stopReason, errorMessage: details?.errorMessage, output: text, usage: details?.usage, model: details?.model }, expanded, theme);
+      } catch (e) {
+        // L44 (warn): renderResult 异常 → 记日志 + 最简占位 (不影响主流程/返回).
+        logEvent({ level: "warn", event: "render.update.failed", errorMessage: (e as Error).message });
+        return new Text("subagent result", 0, 0);
+      }
     },
   });
 }
