@@ -118,6 +118,10 @@ export interface StreamUpdateDetails {
   results: SingleResult[];
   progress: ProgressSnapshot[];
   runId?: string; // ISSUE-08: live 帧携带 runId (viewer store 建批 + 投影节点键)
+  sessionDir?: string; // ISSUE-08: live 帧携带 sessionDir (viewer 会话 live 读盘)
+  usageBudget?: number; // ISSUE-08: live 帧携带生效预算 (投影 usageBudgetExplicit 推导)
+  budgetAuto?: boolean;
+  contextPercent?: number | null; // ISSUE-08: live 帧携带子代理口径 ctx% (运行中即可展示)
 }
 export type StreamUpdateCallback = (partial: AgentToolResult<StreamUpdateDetails>) => void;
 
@@ -1571,9 +1575,19 @@ export async function runSingleAgent(opts: {
     });
     // M02 D002: spawn 前捕获 (details.startedAtMs = 本次执行起点, 与 settle endedAtMs 配对算 elapsed).
     const startedAtMs = Date.now();
-    // ISSUE-08: live onUpdate 注入 runId + sessionDir (viewer store 建批 + 会话 live 读盘).
+    // ISSUE-08: live onUpdate 注入 runId/sessionDir/usageBudget/budgetAuto/contextPercent
+    // (viewer store 建批 + 会话 live 读盘 + cap/ctx% 运行中展示).
     const streamOnUpdate: StreamUpdateCallback | undefined = opts.onUpdate
-      ? (partial) => opts.onUpdate!({ ...partial, details: { ...partial.details, runId, sessionDir } })
+      ? (partial) => {
+          const r = partial.details.results?.[0];
+          const windowModel = r?.model ?? effectiveModel;
+          let cp: number | null = null;
+          if (windowModel !== undefined && typeof r?.contextTokens === "number") {
+            const w = resolveModelWindow(opts.ctx, windowModel);
+            if (w > 0) cp = (r.contextTokens / w) * 100;
+          }
+          opts.onUpdate!({ ...partial, details: { ...partial.details, runId, sessionDir, usageBudget: opts.usageBudget, budgetAuto: opts.budgetAuto, contextPercent: cp } });
+        }
       : undefined;
     const result = await runProcess(opts.agent, opts.task, args, opts.cwd, opts.timeoutMs, opts.signal, usageBudget, opts.budgetAuto, streamOnUpdate);
 

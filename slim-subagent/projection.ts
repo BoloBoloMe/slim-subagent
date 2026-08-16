@@ -190,15 +190,19 @@ function projectSingle(d: Record<string, unknown>, callParams: ProjectionCallPar
   const taskRaw = (d.taskPreview as string | undefined) ?? (typeof live.task === "string" ? live.task : undefined) ?? callParams?.task ?? "";
   const runId = (d.runId as string | undefined) ?? (live.runId as string | undefined) ?? "";
   const sessionDir = (d.sessionDir as string | undefined) ?? (live.sessionDir as string | undefined) ?? "";
-  const endedAtMs = d.endedAtMs as number | undefined; // 终态判据: settle 时刻
+  // ISSUE-08 修复: live 流式帧的终态字段在 results[0] (SingleResult) 而非顶层 details;
+  // 终态判据/错误字段都回退 live, 否则 live 帧永远映射 active (viewer 状态不更新, 需 reload 才变).
+  const endedAtMs = (d.endedAtMs as number | undefined) ?? (live.endedAtMs as number | undefined);
   const { model, modelSource } = modelOf((d.model as string | undefined) ?? (live.model as string | undefined), callParams?.model);
   const usage = (live.usage as SlimUsage | undefined) ?? (d.usage as SlimUsage | undefined);
-  const exitCode = d.exitCode as number | undefined;
-  const stopReason = d.stopReason as string | undefined;
-  const processSignal = d.processSignal as string | undefined;
-  const errorMessage = d.errorMessage as string | undefined;
+  const exitCode = (d.exitCode as number | undefined) ?? (live.exitCode as number | undefined);
+  const stopReason = (d.stopReason as string | undefined) ?? (live.stopReason as string | undefined);
+  const processSignal = (d.processSignal as string | undefined) ?? (live.processSignal as string | undefined);
+  const errorMessage = (d.errorMessage as string | undefined) ?? (live.errorMessage as string | undefined);
   const isError = typeof exitCode === "number" && exitCode !== 0 ? true : errorMessage ? true : undefined;
   const contextPercent = (d.contextPercent as number | null | undefined) ?? null;
+  // ISSUE-08 修复: usageBudgetExplicit 优先从 final details 推导 (budgetAuto=false → usageBudget), 退化调用侧快照.
+  const explicitBudget = (d.budgetAuto === false && typeof d.usageBudget === "number") ? (d.usageBudget as number) : (typeof callParams?.usageBudget === "number" ? callParams.usageBudget : undefined);
   const resumed = d.resumed === true;
   return {
     id: runId || "—", // 无 runId 的 live 早期帧以占位, final 帧同键覆盖 (toolCallId+mode 侧由消费侧拼)
@@ -213,7 +217,7 @@ function projectSingle(d: Record<string, unknown>, callParams: ProjectionCallPar
     model,
     modelSource,
     ...(callParams?.timeoutMs !== undefined || (d.timeoutMsExplicit !== undefined) ? { timeoutMsExplicit: ((d.timeoutMsExplicit as number | undefined) ?? callParams?.timeoutMs) as number } : {}),
-    ...(callParams?.usageBudget !== undefined ? { usageBudgetExplicit: callParams.usageBudget } : {}),
+    ...(explicitBudget !== undefined ? { usageBudgetExplicit: explicitBudget } : {}),
     contextPercent,
     ...(stopReason !== undefined ? { stopReason } : {}),
     ...(errorMessage !== undefined ? { errorMessage } : {}),
