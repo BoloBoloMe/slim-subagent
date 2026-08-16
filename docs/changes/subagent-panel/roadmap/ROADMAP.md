@@ -49,10 +49,11 @@
 - [MILESTONE-07](MILESTONE-07.md) — 定稿盘问闭环, **PRD v2.0 确认版落盘**: 形态 A+D+E (B/C 出局); Run Card 变体 C + spinner 动效 + CH 段; Viewer = Timeline + 子代理会话 tab; 命令面 /agent-sessions (alt+v) + /agent-diagnose; 无手动 copy/resume 入口; 数据源内存+磁盘回补 20 批; 测试策略 (node --test + pty 冒烟). 账本: [DECISIONS.md](../milestone-07/DECISIONS.md) (D001-D013, F001-F005); 领域语言 [docs/language/UBIQUITOUS_LANGUAGE.md](../../language/UBIQUITOUS_LANGUAGE.md) 首建.
 - [MILESTONE-08](MILESTONE-08.md) — 施工闸门定稿: 五新文件模块划分 (log/projection/card/viewer/diagnose) + 现有文件只插桩; M12/M13/M14 并行纪律 (index.ts 归 M12, 接线主会话统一); 5 类纯函数单测先行; feat/doc 提交分工; 委派禁验证剧场. 账本: [milestone-08/DECISIONS.md](../milestone-08/DECISIONS.md) (D001-D005).
 - [MILESTONE-09](MILESTONE-09.md) — 日志骨架落地: `log.ts` (append-only JSONL 按日文件 + level 体系 trace..fatal/PI_SUBAGENT_LOG_LEVEL + 脱敏/taskHash + 7 日 GC runLogGc) + L01-L10/L25-L27/L40-L44 插桩 (index/single/agents/resume, 只插桩不改执行逻辑); 单测 7 绿, 全量 96 过 3 既有红 (agents.test.ts 模型漂移). 决策记录: [milestone-09/UNAUTHORIZED_DECISIONS.md](../milestone-09/UNAUTHORIZED_DECISIONS.md); commit 71850e0.
+- [MILESTONE-10](MILESTONE-10.md) — 日志全量挂载 + details 补丁: L11-L39 全量插桩 (single/index/resume), assembleSingleResult 六字段补丁 (mode/agent/taskPreview/timeoutMsExplicit/startedAtMs/endedAtMs), ctx 改子代理口径 (删 getContextUsage 父口径, contextTokens/resolveModelWindow), run.json settle 补丁写 (writeRunJsonSettle, L07 降级 warn); 测试 105 过 102 3 既有红. commit a7d98ca.
 
 ## 前沿
 
-- [MILESTONE-10](MILESTONE-10.md) — `task` — 日志全量挂载 + details 补齐 (ISSUE-02, 已解锁)
+- [MILESTONE-17](MILESTONE-17.md) — `task` — F1 parallel per-child 实时进度透传 (ISSUE-03, 已解锁)
 
 ## 未决迷雾
 
@@ -74,6 +75,6 @@ M06 ─┘                                           ├─→ M13 ─┼─→ 
                                                  └─→ M14 ─┘
 ```
 
-- M07 阻塞于 M04, M05, M06 (均已关闭); M08 阻塞于 M07 (已关闭); M09 已关闭 → M10 即前沿.
+- M07 阻塞于 M04, M05, M06 (均已关闭); M08 阻塞于 M07 (已关闭); M09, M10 已关闭 → M17 即前沿.
 - M09–M10 串行; M17 (F1 转化) 阻塞于 M10, 阻塞 M11; M12–M14 并行阻塞于 M11; M15 已关闭记因 (B/C 不升级).
 - M16 阻塞于 M12, M13, M14.
