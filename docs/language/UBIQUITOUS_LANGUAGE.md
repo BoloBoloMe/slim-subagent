@@ -48,7 +48,7 @@ _避免_: Conversation (v1 旧名, 已更名)
 ## 语言
 
 **基准模型 (Baseline)**:
-评分锚点 `opencode-go/deepseek-v4-flash`, 全维 = 1. 其余模型分数为相对它的比率分, 允许 >1 或 <1.
+评分锚点 `opencode-go/deepseek-v4-flash`, 除 multimodal 外全维 = 1 (它纯文本, 该维用绝对能力档). 其余模型分数为相对它的比率分, 允许 >1 或 <1.
 _避免_: 基线, 参照物
 
 **画像 (Profile)**:
