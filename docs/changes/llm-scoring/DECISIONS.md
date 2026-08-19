@@ -48,7 +48,7 @@
 - 预计影响: 评分表列名, SKILL.md 权重表列名
 
 ### D007 评分表载体: Markdown 单文件
-- 状态: 当前有效
+- 状态: 已替代 (→ D023)
 - 约束性: 必须遵守
 - 内容: 评分表用 Markdown: 模型分数 = MD 表格 (一行一模型, 一列一维度), 规则与公式 = 表旁文字. 否决 JSON (人读差), YAML (7×7 矩阵不直观), JSON+MD 双产物 (同步成本). 核心消费动作是"人审分 + LLM 查数排序", MD 表格对两者均最优; LLM 解析 MD 表格可靠.
 - 预计影响: scores-template.md
@@ -76,7 +76,7 @@
 ### D011 产物拆分: 规则随包, 分数 per-device
 - 状态: 当前有效
 - 约束性: 必须遵守
-- 内容: 随包 (slim-subagent/skills/subagent-llm-select/): SKILL.md (流程+画像权重+规则) 与 scores-template.md (模板). 不随包: 评分数据文件 `~/.pi/agent/slim-subagent/llm-scores.md`, per-device. 理由: 分数评的是本机 scoped 列表里的模型, 各设备可用模型/provider 不同 (settings.json 本就 per-device); 随包会被多设备互相覆盖与 pi update 冲刷. 代价: 多设备分数各自演化不自动同步, 要同步需自行 git 管理.
+- 内容: 随包 (slim-subagent/skills/subagent-llm-select/): SKILL.md (流程) 与 scores-template.yaml (模板); 算分规则与画像权重在 score.py (D022). 不随包: 评分数据文件 `~/.pi/agent/slim-subagent/llm-scores.yaml`, per-device. 理由: 分数评的是本机 scoped 列表里的模型, 各设备可用模型/provider 不同 (settings.json 本就 per-device); 随包会被多设备互相覆盖与 pi update 冲刷. 代价: 多设备分数各自演化不自动同步, 要同步需自行 git 管理.
 - 依赖事实: F005
 - 预计影响: 上述两路径
 
@@ -102,7 +102,7 @@
 ### D015 验收标准
 - 状态: 当前有效
 - 约束性: 必须遵守
-- 内容: 完成判定三条: (a) 评分表含 scoped 3 模型七维分 + updatedAt, price 列可按 D009 公式重算验证一致; (b) `subagent-llm-select` skill 存在且 description 含"委派 subagent 前"触发场景; (c) 模拟一次委派: 按 skill 流程对给定任务输出排序 (画像名+总分+标注), 结果可手工复算.
+- 内容: 完成判定三条: (a) 评分表含 scoped 3 模型六维分 + updatedAt, price 由算分器派生且与 D009 公式手算一致; (b) `subagent-llm-select` skill 存在且 description 含"委派 subagent 前"触发场景; (c) 模拟一次委派: 按 skill 流程对给定任务输出排序 (画像名+总分+标注), 结果可手工复算.
 
 ### D016 已知风险与缓解
 - 状态: 当前有效
@@ -124,7 +124,7 @@
 - 实际影响: `~/.pi/agent/slim-subagent/llm-scores.md`
 
 ### D019 总分由 LLM 现算, 不引入计算脚本
-- 状态: 当前有效
+- 状态: 已替代 (→ D022)
 - 约束性: 可调整
 - 内容: 排序时的计算分工: 价格派生用 jq 命令 (bash 工具) 从 models-store.json 现算; 加权总分 (Σ 权重×分数, N/A 重归一化) 由 LLM 自行计算. 考虑过在 skill 目录加 score.py 把全计算脚本化 (消除 LLM 算术错误风险), 用户否决. 接受的理由: 3 模型 × 7 维算术量小; D015 验收 (c) 要求结果可手工复算, 已提供纠错网. 若未来 scoped 列表扩大或发现算错实例, 可重提脚本化.
 - 实际影响: 无 (维持 SKILL.md 步骤 4 现状)
@@ -141,6 +141,19 @@
 - 内容: 用户发现的盲点: 不同模型支持的 thinking 级别不同, 父会话传 thinking 时无校验. 机制事实: pi 对不支持的级别静默 clamp (pi-ai clampThinkingLevel, 先向上再向下取最近), 不报错但意图漂移 (如 k3 的 off 会被 clamp 成 low). 规则入 SKILL.md 步骤 5: thinking 取值顺序 调用方显式要求 > agent 默认 > high, 最终值必须在模型支持集内; 支持集从 models-store.json 现查 (reasoning/thinkingLevelMap, 与价格派生同一数据源, 零代码). 当前 scoped 3 模型支持集: deepseek-v4-flash = off/low/high/max; k3 = low/high/max (无 off); kimi-for-coding = off~high (无 xhigh/max). 既有配置 (explorer/reviewer max+flash, worker high+kfc) 经验证均兼容, 无需调整.
 - 依赖事实: F008
 - 实际影响: SKILL.md 步骤 5
+
+### D022 算分脚本化: score.py 全包计算
+- 状态: 当前有效
+- 约束性: 必须遵守
+- 内容: 替代 D019. 实际使用中算分流程让主代理读 2 个文件 + 跑 jq + 口算加权 + 查 thinking 支持集, token 与思考开销过大, 用户要求减负. 方案: `slim-subagent/skills/subagent-llm-select/score.py` (PEP 723 内联依赖, `uv run score.py <画像> [thinking偏好]` 自动解析 PyYAML). 脚本全包: scoped 解析 (settings enabledModels glob ∩ auth), 价格派生 (D009 公式), N/A 重归一化与必需维度过滤, 加权排序, thinking 支持集校验与 clamp (与 pi-ai 同规). 画像权重表从 SKILL.md 迁入脚本 (单一真相源). LLM 只剩: 判画像 → 跑一条命令 → 抄输出委派. 已实测五画像输出与手算一致 (coding 1.089/1.016/1.000; cheap-batch 翻转 flash; vision 过滤纯文本基准; review max 与 general off 的 clamp 正确). 注意: `uv run python score.py` 不解析 PEP 723 元数据, 必须 `uv run score.py`. 局限: --models CLI flag 的并集脚本不可得 (仅读 settings).
+- 依赖事实: F001, F003, F008
+- 实际影响: score.py 新建; SKILL.md 步骤 4/5 计算规则删除改为跑脚本
+
+### D023 评分表载体改 YAML + PyYAML
+- 状态: 当前有效
+- 约束性: 必须遵守
+- 内容: 替代 D007. 用户比较 YAML 示例后选定: 每分可挂行内注释 (审分场景真实增益), 脚本解析稳 (标准 YAML parser vs 正则切表格). 代价: 引入 PyYAML 依赖 — 用户明示同意 (SKILL-MECHANICS 要求), 以 PEP 723 内联元数据承载, 无项目级依赖文件. 文件改名 llm-scores.yaml (数据, per-device) 与 scores-template.yaml (模板, 随包).
+- 实际影响: scores-template.yaml 替换 scores-template.md; ~/.pi/agent/slim-subagent/llm-scores.yaml 替换 .md; SKILL.md 与 D011 路径引用同步
 
 ## 事实
 

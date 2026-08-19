@@ -1,0 +1,29 @@
+# LLM 评分表模板 (bootstrap 时复制为 ~/.pi/agent/slim-subagent/llm-scores.yaml 再填分)
+# 分数 = 相对基准的比率分, 允许 >1 (强) / <1 (弱); null = N/A (该维权重归零重归一化,
+# 任务必需维度 N/A 则过滤). price 不存于此: 由 score.py 从 models-store.json 派生.
+# multimodal 例外: 基准纯文本时该维无比率锚点, 用绝对能力档 (1=可用, 1.5+=强).
+# 维护: scoped 新增模型手动加条目 (全维 1 占位待评); 改分事件驱动, 同步 updatedAt 与 note.
+# model 键永远用 provider/model 全限定名 (同名模型存在于多个 provider).
+
+baseline: opencode-go/deepseek-v4-flash  # 除 multimodal 外全维 = 1
+
+models:
+  opencode-go/deepseek-v4-flash:
+    coding: 1
+    knowledge: 1
+    longctx: 1
+    multimodal: null
+    stability: 1
+    speed: 1
+    updatedAt: YYYY-MM-DD
+    note: 基准
+
+  # provider/model:
+  #   coding: 1      # 每维可挂行内注释记依据
+  #   knowledge: 1
+  #   longctx: 1
+  #   multimodal: 1
+  #   stability: 1
+  #   speed: 1
+  #   updatedAt: YYYY-MM-DD
+  #   note: 一行依据
