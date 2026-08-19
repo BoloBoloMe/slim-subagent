@@ -40,3 +40,39 @@ _避免_: Conversation (v1 旧名, 已更名)
 领域专家: "按 alt+v 开 **Session Viewer**, **Timeline** 上最新**批次**已经在底部, Enter 选中, 切到 reviewer 的 tab 看会话; 要诊断按 `d` 触发 **Diagnose**."
 开发者: "运行中想瞟一眼进度呢?"
 领域专家: "看 **Run Card** — spinner 在转就是 active; parallel 批次没进并发槽的 child 显示 pending."
+
+# Subagent LLM 选型评分
+
+委派 subagent 时为 `model` 传参选型的领域: 评分表 × 任务画像 → 可复算的排序.
+
+## 语言
+
+**基准模型 (Baseline)**:
+评分锚点 `opencode-go/deepseek-v4-flash`, 全维 = 1. 其余模型分数为相对它的比率分, 允许 >1 或 <1.
+_避免_: 基线, 参照物
+
+**画像 (Profile)**:
+任务类型到七维权重向量的预设映射: coding / research / review / vision / long-doc / cheap-batch / general (兜底). 委派报告必须声明所用画像.
+_避免_: 任务类型, 场景权重
+
+**派生分 (derived)**:
+price 维度不存表, 排序时按公式从 models-store.json 的 cost 字段现算, 随厂商调价自动更新.
+_避免_: 价格分 (暗示存数值)
+
+**N/A**:
+维度不适用 (表中 `null`): 权重归零重归一化; 任务必需维度 N/A 的模型被过滤.
+_避免_: 0 分 (记 0 是惩罚, N/A 是不参与)
+
+**bootstrap**:
+评分表缺失时的建立流程: 逐 scoped 模型派 explorer 联网调研 (官方来源优先), 照模板起草, 提示用户检查.
+
+**scoped 模型**:
+本机 settings.json `enabledModels` ∪ `--models` CLI flag 匹配可用目录且有凭证的模型集合, 选型只在其中进行.
+_避免_: 可用模型 (24 个有凭证全集, 含义更宽)
+
+## 示例对话
+
+开发者: "要派 reviewer 审一批代码, 用哪个模型?"
+领域专家: "走 subagent-llm-select: 候选集 = **scoped 模型**, 任务配 **画像** review, 查评分表算总分, **派生分**现算, 胜者作 model 传参."
+开发者: "评分表里没有 grok-4.5 呢?"
+领域专家: "它在 scoped 列表里才有意义; 若在而表未收录, 全维按 1 (= **基准模型**) 参与排序并标 `[未评分]`. 表整个不存在就走 **bootstrap**."
