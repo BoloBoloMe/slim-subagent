@@ -160,3 +160,8 @@
 - 状态: 当前有效
 - 来源: `~/.pi/agent/models-store.json`
 - 内容: deepseek-v4-flash 在 deepseek 与 opencode-go 两个 provider 下各有一条目录记录, 价格/可用性不同. 一切模型引用 (评分表 model 列, 基准, model 传参) 必须用 `provider/model` 全限定名.
+
+### F007 local path 包目录的回退加载陷阱
+- 状态: 当前有效
+- 来源: pi dist/core/package-manager.js `resolveLocalExtensionSource` + 实验复现 (移走 skills/ 工具恢复, 放回则消失)
+- 内容: local path 指向目录时, pi 先按包规则找约定资源目录 (extensions/skills/prompts/themes); 四类目录一个都不存在才回退为"目录本身即扩展" (进而加载 index.ts). slim-subagent 原靠此回退加载 index.ts; 新增 skills/ 后回退不再触发, 扩展静默消失, skill 正常. 修复: 加 package.json 显式声明 `"pi": {"extensions":["./index.ts"], "skills":["./skills"]}`. 教训: 给纯扩展目录新增任何约定资源目录前, 必须先补 package.json manifest.

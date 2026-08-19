@@ -1,0 +1,10 @@
+{
+  "name": "slim-subagent",
+  "version": "0.1.0",
+  "private": true,
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./index.ts"],
+    "skills": ["./skills"]
+  }
+}
