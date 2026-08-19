@@ -41,7 +41,7 @@ const PER_TASK_OUTPUT_CAP = 50 * 1024;
 // 工具描述: 阻塞语义 + 接口速记 + list/resume 操作语义 (schema 参数描述里没有的);
 // 委派偏置 (独立且值得 / 默认委派 / 主会话职责) 由 promptSnippet 承担, 不重复.
 const TOOL_DESCRIPTION =
-  "调用后阻塞等待结果. 单次: agent + task; 并行: tasks[]; action:\"list\" 发现 agents; \"resume\" + id 恢复中止的运行.";
+  "调用后阻塞等待结果. 单次: agent + task; 并行: tasks[]; action:\"list\" 发现 agents; \"resume\" + id 恢复中止的运行. 委派前先调用 subagent-llm-select skill 按任务画像排序选定 model 再传参.";
 
 // /subagent-diagnose 注入的用户消息 (LLM 自由诊断, PRD: docs/changes/subagent-llm-diagnose/prd.md):
 // 命令本身零逻辑, 诊断由新开会话的 LLM 读落盘数据源完成; 提示词须自含数据源位置/字段口径/汇报纪律.
@@ -62,7 +62,7 @@ const DIAGNOSE_PROMPT =
 const TaskItem = Type.Object({
   agent: Type.String({ description: "agent 名" }),
   task: Type.String({ description: "并行任务" }),
-  model: Type.Optional(Type.String({ description: "覆盖 agent 默认 model (settings.json subagent.<name>.model)" })),
+  model: Type.Optional(Type.String({ description: "覆盖 agent 默认 model (settings.json subagent.<name>.model); 取值应来自 subagent-llm-select 排序结果" })),
   thinking: Type.Optional(Type.String({ description: "覆盖 agent 默认 thinking 深度 (settings.json subagent.<name>.thinking)" })),
   timeoutMs: Type.Optional(Type.Number({ description: "超时毫秒" })),
   usageBudget: Type.Optional(Type.Number({ description: "token 上限" })),
@@ -74,7 +74,7 @@ const SubagentParams = Type.Object({
   agent: Type.Optional(Type.String({ description: "agent 名" })),
   task: Type.Optional(Type.String({ description: "单次任务; 与 tasks 互斥" })),
   tasks: Type.Optional(Type.Array(TaskItem, { description: "parallel 任务数组, ≤8; 长度为 1 时等价 task (走单次管线)" })),
-  model: Type.Optional(Type.String({ description: "覆盖 agent 默认 model (settings.json subagent.<name>.model); action:\"resume\" 不接受 (已建子代理不支持中途换模型)" })),
+  model: Type.Optional(Type.String({ description: "覆盖 agent 默认 model (settings.json subagent.<name>.model); 取值应来自 subagent-llm-select 排序结果; action:\"resume\" 不接受 (已建子代理不支持中途换模型)" })),
   thinking: Type.Optional(Type.String({ description: "覆盖 agent 默认 thinking 深度 (off/minimal/low/medium/high/xhigh/max); resume 时也可覆盖" })),
   timeoutMs: Type.Optional(Type.Number({ description: "超时毫秒, 默认 900000" })),
   usageBudget: Type.Optional(Type.Number({ description: "累计 input+output+cacheWrite token 上限, 触顶中止" })),
