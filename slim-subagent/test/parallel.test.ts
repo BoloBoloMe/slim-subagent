@@ -109,6 +109,31 @@ test("TC-001 more than 8 parallel tasks errors with official text", async () => 
   }
 });
 
+// D024 回归: 未知 agent (无 model) 在 ≥2 项批次里应按 per-child 报 Unknown agent,
+// 而非被 runParallelTasks 的缺 model 校验误报为整批 "缺少生效 model" (校验层已前置拦截 known-agent 缺 model).
+test("TC-001b unknown agent in batch reports per-child, not missing-model", async () => {
+  const home = makeTempHome();
+  try {
+    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");
+    const { result, details } = await runParallel(home, {
+      tasks: [
+        { agent: "Ghost1", task: "t1" },
+        { agent: "Ghost2", task: "t2" },
+      ],
+    });
+    // 整批不被缺 model 拒绝 (两个未知 agent 均无 model, 但应走 per-child 未知 agent 失败路径).
+    assert.equal(result.isError, undefined, "批次不应被整批拒绝");
+    assert.equal(details.results.length, 2);
+    assert.ok(details.results[0].text.includes("Unknown agent: \"Ghost1\""), details.results[0].text);
+    assert.ok(details.results[1].text.includes("Unknown agent: \"Ghost2\""), details.results[1].text);
+    assert.equal(details.results[0].isError, true);
+    assert.equal(details.results[1].isError, true);
+    assert.ok(!resultText(result).includes("缺少生效 model"), "不应误报缺 model");
+  } finally {
+    cleanup(home);
+  }
+});
+
 test("TC-002 parallel runs all tasks and aggregates in order", async () => {
   const home = makeTempHome();
   try {

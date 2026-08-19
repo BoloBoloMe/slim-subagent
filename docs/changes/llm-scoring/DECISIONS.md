@@ -161,6 +161,13 @@
 - 内容: 用户裁定: "故意用默认模型"的前提不成立 — 故意就意味着已确定默认模型是什么, 那就该显式传参而不是依赖回退. 因此 single/parallel 执行前校验: model 传参与 agent 默认 (settings.json subagent.<name>.model) 都缺 → 报错引导 (按 subagent-llm-select 排序传参或配置默认), 不再静默继承子进程 pi 默认模型. resume 不受影响 (本来就不接受 model). bootstrap 兼容: 未配置默认模型的机器上 bootstrap 委派会收到明确报错, 父会话据此补传 model — 行为有定义. 副作用: 测试基座 writeAgent 一律补默认 model (noDefaultModel 豁免供 TC-012/013), writeSettings 改合并语义, TC-003a 语义反转 (原断言无 settings 不传 --model, 现断言拒绝).
 - 实际影响: slim-subagent/index.ts validateExecuteParams; test/helpers.ts; test/agents.test.ts TC-002a/TC-003a; test/log.test.ts TS-SMOKE; README.md
 
+### D025 评分表随 scoped 变更重生成 (2026-08-20)
+- 状态: 当前有效
+- 约束性: 可调整
+- 内容: scoped 列表变动后重跑 bootstrap 调研 (仅新模型, 未变模型沿用原分). 关键认知: 同实体模型换 provider (kimi-for-coding → opencode-go/kimi-k2.7-code) 分数不可直接平移 — stability 评的是供应商而非模型, 中转平台与官方直连差异巨大 (1.2 → 0.5); multimodal 等能力维也需按端点实际支持压档 (1.8 → 1.3).
+- 依赖事实: F009
+- 实际影响: ~/.pi/agent/slim-subagent/llm-scores.yaml
+
 ## 事实
 
 ### F001 scoped 模型解析机制
@@ -168,8 +175,13 @@
 - 来源: pi 官方文档 docs/extensions.md (ctx.scopedModels 节), docs/usage.md
 - 内容: scoped 模型 = `--models` CLI flag 与 settings.json `enabledModels` 的并集, 经 minimatch 匹配可用目录 (支持 `provider/modelId` 或裸 modelId, 支持 glob 如 `opencode-go/*`, 可带 `:thinking` 后缀), 会话启动时解析; TUI `/scoped-models` 命令展示同一集合. 无配置时为空 = 全部可用模型可选.
 
-### F002 当前环境模型清单 (2026-08-19)
+### F009 scoped 变更与评分重生成 (2026-08-20)
 - 状态: 当前有效
+- 来源: ~/.pi/agent/settings.json enabledModels; explorer 调研报告
+- 内容: F002 的 scoped 列表已变更: kimi-coding/kimi-for-coding 出, opencode-go/kimi-k2.7-code 入 (同实体 K2.7 Code, 但端点转为中转平台). 评分表已重生成, 新条目六维分: coding 1.15 / knowledge 1.05 (父族 proxy 弱依据) / longctx 0.85 / multimodal 1.3 (中转压档) / stability 0.5 (中转额度争议+限流记录, 最大短板) / speed 1.1 (弱依据). 效应: coding 画像首选从 k2.7 翻转为 k3 (stability 0.5 下拉). 与 D018 的 kimi-for-coding 分数差异主要来自供应商维度口径 (官方直连 vs 中转).
+
+### F002 当前环境模型清单 (2026-08-19)
+- 状态: 已变更 (→ F009)
 - 来源: `jq` 查询 `~/.pi/agent/models-store.json` + `auth.json` + `settings.json`
 - 内容: 有凭证 provider: kimi-coding, opencode-go. 可用模型 24 个 (models-store 全集 26, 含无凭证的 deepseek provider 2 个不可用): kimi-coding/{k3, k3-256k, kimi-for-coding, kimi-for-coding-highspeed}, opencode-go/{deepseek-v4-flash, deepseek-v4-pro, glm-5.1, glm-5.2, glm-5.3, gpt-5.6-luna, grok-4.5, hy3, kimi-k2.6, kimi-k2.7-code, kimi-k3, mimo-v2.5, mimo-v2.5-pro, minimax-m2.7, minimax-m3, muse-spark-1.2-contributor, qwen3.6-plus, qwen3.7-max, qwen3.7-plus, qwen3.8-max}. scoped (enabledModels) 3 个: kimi-coding/k3, opencode-go/deepseek-v4-flash, kimi-coding/kimi-for-coding. 目录中 deepseek provider (deepseek-v4-flash/pro) 无凭证不可用.
 

@@ -271,23 +271,10 @@ async function runParallelTasks(
     };
   }
 
-  // M2-D008: 顶层 model 作批默认 (D024 校验需先于批次建目录, 避免为注定失败的批次落盘).
+  // M2-D008: 顶层 model 作批默认 (item 级覆盖 undefined 回退顶层).
+  // D024 缺 model 拒绝已由 validateExecuteParams 在 execute 前置拦截 (known agent 三者皆缺即拒);
+  // 未知 agent 留给 per-child 失败路径独立报告 — 此处不再重复校验, 否则未知 agent 会被误报为缺 model.
   const defaultModel = typeof params.model === "string" && params.model !== "" ? params.model : undefined;
-  // D024: 生效 model 缺失 → 拒绝整批 (禁止静默继承 pi 默认模型), 报错引导传参.
-  for (let i = 0; i < tasks.length; i++) {
-    const t = tasks[i];
-    const agent = agents.find((a) => a.name === t.agent);
-    const model = typeof t.model === "string" && t.model !== "" ? t.model : defaultModel;
-    if (!effectiveModelOf(model, agent)) {
-      const msg = `tasks[${i}] agent "${String(t.agent)}" 缺少生效 model: 未传 model 且 settings.json 未配置 subagent.<name>.model. 委派前请先调用 subagent-llm-select skill 按任务画像选定模型再传 model.`;
-      logEvent({ level: "warn", event: "parallel.batch.model_missing", mode: "parallel", childIndex: i, agent: String(t.agent), errorMessage: msg });
-      return {
-        content: [{ type: "text", text: msg }],
-        details: { mode: "parallel", runId: "", results: [], progress: [] },
-        isError: true,
-      };
-    }
-  }
 
   const batchRunId = makeRunId();
   // L28 (info): 并行批次开始.
