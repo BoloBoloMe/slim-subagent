@@ -62,17 +62,42 @@ export async function withFakePi<T>(
   }
 }
 
-export function writeAgent(home: string, fileName: string, yaml: string, body = "system prompt body"): void {
+export function writeAgent(home: string, fileName: string, yaml: string, body = "system prompt body", opts?: { noDefaultModel?: boolean }): void {
   const dir = path.join(home, CONFIG_DIR_NAME, "agent", "agents");
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, fileName), `---\n${yaml}\n---\n${body}\n`);
+  // D024: execute 校验要求生效 model 存在. 测试 agent 一律补默认 model (不覆盖显式配置),
+  // 使"无默认模型"成为只有 TC-012/013 刻意构造的例外.
+  const name = /^name:\s*(.+)$/m.exec(yaml)?.[1]?.trim();
+  if (name && !opts?.noDefaultModel) mergeSettings(home, { subagent: { [name]: { model: "fake-model-1" } } }, true);
+}
+
+// 深合并 settings.json (现支持 subagent 块 per-agent 合并); keepExisting=true 时已有键不覆盖 (writeAgent 补默认用).
+function mergeSettings(home: string, settings: Record<string, unknown>, keepExisting: boolean): void {
+  const dir = path.join(home, CONFIG_DIR_NAME, "agent");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, "settings.json");
+  const existing = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf-8")) as Record<string, unknown> : {};
+  const merged: Record<string, unknown> = { ...existing };
+  for (const [k, v] of Object.entries(settings)) {
+    if (k === "subagent" && typeof v === "object" && v !== null) {
+      const sub = { ...((existing.subagent as Record<string, unknown> | undefined) ?? {}) };
+      for (const [agentName, cfg] of Object.entries(v as Record<string, Record<string, unknown>>)) {
+        const prev = (sub[agentName] as Record<string, unknown> | undefined) ?? {};
+        sub[agentName] = keepExisting ? { ...cfg, ...prev } : { ...prev, ...cfg };
+      }
+      merged.subagent = sub;
+    } else {
+      if (!keepExisting || !(k in merged)) merged[k] = v;
+    }
+  }
+  fs.writeFileSync(file, JSON.stringify(merged, null, 2) + "\n");
 }
 
 // 写全局 settings.json (<home>/.pi/agent/settings.json) — 子代理默认 model/thinking (subagent 块) 测试用.
+// D024 后改为合并语义: 显式值覆盖 writeAgent 补的默认, 与调用顺序无关.
 export function writeSettings(home: string, settings: Record<string, unknown>): void {
-  const dir = path.join(home, CONFIG_DIR_NAME, "agent");
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, "settings.json"), JSON.stringify(settings, null, 2) + "\n");
+  mergeSettings(home, settings, false);
 }
 
 // Windows 无 POSIX 信号语义: child.kill() 直接终止进程, 子进程无法接住/记录 SIGINT/SIGTERM —

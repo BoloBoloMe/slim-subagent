@@ -7,6 +7,20 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { makeTempHome, withHome, captureTool, writeAgent, resultText, cleanup } from "./helpers.ts";
+import { fileURLToPath } from "node:url";
+
+// TC-012/013 在修复前会穿过校验层直达 spawn: 必须注入 fake pi, 否则红的形式是真子进程挂起 (默认 15min).
+const FAKE_PI = fileURLToPath(new URL("./fixtures/fake-pi.mjs", import.meta.url));
+async function withFakePi<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = process.env.PI_SUBAGENT_PI_BINARY;
+  process.env.PI_SUBAGENT_PI_BINARY = FAKE_PI;
+  try {
+    return await fn();
+  } finally {
+    if (prev === undefined) delete process.env.PI_SUBAGENT_PI_BINARY;
+    else process.env.PI_SUBAGENT_PI_BINARY = prev;
+  }
+}
 
 test("TC-007 unknown agent error lists all candidates", async () => {
   const home = makeTempHome();
@@ -120,6 +134,50 @@ test("REV-1 task without agent is rejected with usage hint (no undefined leak)",
       assert.ok(text.includes("用法"), "报错应列用法");
       assert.ok(!text.includes("undefined"), "报错不应泄露内部 undefined");
     });
+  } finally {
+    cleanup(home);
+  }
+});
+
+// 生效 model 缺失拒绝 (D024): 传参与 agent 默认都缺时禁止静默继承 pi 默认模型, 报错引导传参.
+test("TC-012 single without model and without agent default is rejected", async () => {
+  const home = makeTempHome();
+  try {
+    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理任务", "system prompt body", { noDefaultModel: true });
+    await withHome(home, () => withFakePi(async () => {
+      const tool = captureTool();
+      const result = await tool.execute(
+        "call-m1",
+        { agent: "Alpha", task: "做事" },
+        undefined,
+        undefined,
+        {} as ExtensionContext,
+      );
+      assert.equal(result.isError, true);
+      assert.ok(resultText(result).includes("model"), "报错应点名 model");
+      assert.ok(resultText(result).includes("Alpha"), "报错应点名 agent");
+    }));
+  } finally {
+    cleanup(home);
+  }
+});
+
+test("TC-013 parallel item without model and without agent default is rejected", async () => {
+  const home = makeTempHome();
+  try {
+    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理任务", "system prompt body", { noDefaultModel: true });
+    await withHome(home, () => withFakePi(async () => {
+      const tool = captureTool();
+      const result = await tool.execute(
+        "call-m2",
+        { tasks: [{ agent: "Alpha", task: "做事" }] },
+        undefined,
+        undefined,
+        {} as ExtensionContext,
+      );
+      assert.equal(result.isError, true);
+      assert.ok(resultText(result).includes("model"), "报错应点名 model");
+    }));
   } finally {
     cleanup(home);
   }

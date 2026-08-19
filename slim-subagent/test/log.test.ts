@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
-  makeTempHome, withHome, withFakePi, captureTool, cleanup,
+  makeTempHome, withHome, withFakePi, captureTool, cleanup, writeSettings,
 } from "./helpers.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -242,9 +242,12 @@ test("TS-SMOKE single run produces L01/L05/L09/L25/L27 log events", async () => 
   try {
     await withFakePi(home, "assistant-stop", {}, async () => {
       // 用内置 worker agent (扩展目录 agents/) + 临时 HOME 隔离 logRootDir.
+      // D024: 生效 model 缺失即拒, 内置 agent 需 settings 补默认 model.
+      writeSettings(home, { subagent: { worker: { model: "fake-model-1" } } });
       const tool = captureTool();
       const ctx = { cwd: home } as ExtensionContext;
-      const result = await tool.execute("call-1", { agent: "worker", task: "hello world" }, undefined, undefined, ctx);
+      // D024: 生效 model 必须存在 — 传参 model 后 worker 无默认 model 也能走完整 spawn 管线 (L05/L09/L25/L27).
+      const result = await tool.execute("call-1", { agent: "worker", task: "hello world", model: "fake-model-1" }, undefined, undefined, ctx);
       assert.ok(result, "execute 应返回 (内容是否成功非本测试关注点)");
       const events = readAllLogLines(home).map((l) => l.event);
       assert.ok(events.includes("tool.execute.start"), "应含 L01");

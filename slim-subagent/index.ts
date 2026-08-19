@@ -111,6 +111,28 @@ function validateExecuteParams(
       const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
       return `Unknown agent: "${params.agent}". Available agents: ${available}.`;
     }
+    // D024: 生效 model 缺失拒绝 — 传参与 agent 默认都缺时禁止静默继承子进程 pi 默认模型.
+    const p = params as { model?: unknown };
+    const agentCfg = agents.find((a) => a.name === params.agent);
+    const hasModel = typeof p.model === "string" && p.model !== "";
+    if (!hasModel && !agentCfg?.model) {
+      return `未指定 model 且 agent "${params.agent}" 无默认模型: 请显式传 model 参数 (按 subagent-llm-select skill 排序选定), 或在 settings.json subagent.${params.agent}.model 配置默认.`;
+    }
+  }
+  if (hasTasks) {
+    // D024 并行同款: per-item 生效 model = item.model ?? params.model ?? agent 默认, 三者皆缺即拒绝.
+    const p = params as { model?: unknown; tasks?: { agent?: unknown; model?: unknown }[] };
+    const topModel = typeof p.model === "string" && p.model !== "" ? p.model : undefined;
+    for (let i = 0; i < (p.tasks ?? []).length; i++) {
+      const item = (p.tasks ?? [])[i];
+      if (typeof item?.agent !== "string") continue;
+      const agentCfg = agents.find((a) => a.name === item.agent);
+      if (!agentCfg) continue; // 未知 agent 由 per-child 失败路径独立报告
+      const itemModel = typeof item.model === "string" && item.model !== "" ? item.model : undefined;
+      if (!itemModel && !topModel && !agentCfg.model) {
+        return `tasks[${i}] 未指定 model 且 agent "${item.agent}" 无默认模型: 请显式传 model 参数 (按 subagent-llm-select skill 排序选定), 或在 settings.json subagent.${item.agent}.model 配置默认.`;
+      }
+    }
   }
   return undefined;
 }
@@ -249,13 +271,30 @@ async function runParallelTasks(
     };
   }
 
+  // M2-D008: 顶层 model 作批默认 (D024 校验需先于批次建目录, 避免为注定失败的批次落盘).
+  const defaultModel = typeof params.model === "string" && params.model !== "" ? params.model : undefined;
+  // D024: 生效 model 缺失 → 拒绝整批 (禁止静默继承 pi 默认模型), 报错引导传参.
+  for (let i = 0; i < tasks.length; i++) {
+    const t = tasks[i];
+    const agent = agents.find((a) => a.name === t.agent);
+    const model = typeof t.model === "string" && t.model !== "" ? t.model : defaultModel;
+    if (!effectiveModelOf(model, agent)) {
+      const msg = `tasks[${i}] agent "${String(t.agent)}" 缺少生效 model: 未传 model 且 settings.json 未配置 subagent.<name>.model. 委派前请先调用 subagent-llm-select skill 按任务画像选定模型再传 model.`;
+      logEvent({ level: "warn", event: "parallel.batch.model_missing", mode: "parallel", childIndex: i, agent: String(t.agent), errorMessage: msg });
+      return {
+        content: [{ type: "text", text: msg }],
+        details: { mode: "parallel", runId: "", results: [], progress: [] },
+        isError: true,
+      };
+    }
+  }
+
   const batchRunId = makeRunId();
   // L28 (info): 并行批次开始.
   logEvent({ level: "info", event: "parallel.batch.start", mode: "parallel", batchRunId, data: { taskCount: tasks.length, concurrency: MAX_CONCURRENCY } });
   const batchRoot = sessionRootDir(batchRunId);
   fs.mkdirSync(batchRoot, { recursive: true });
-  // M2-D008: 顶层 model/thinking/timeoutMs/usageBudget 作批默认, item 级字段覆盖 (undefined 回退顶层默认).
-  const defaultModel = typeof params.model === "string" && params.model !== "" ? params.model : undefined;
+  // M2-D008: 顶层 thinking/timeoutMs/usageBudget 作批默认, item 级字段覆盖 (undefined 回退顶层默认).
   const defaultThinking = typeof params.thinking === "string" && params.thinking !== "" ? params.thinking : undefined;
   const defaultTimeout = typeof params.timeoutMs === "number" ? params.timeoutMs : undefined;
   const defaultBudget = params.usageBudget as number | undefined;
@@ -571,6 +610,13 @@ export default function (pi: ExtensionAPI) {
       const task = typeof params?.task === "string" ? params.task : "";
       const model = typeof params?.model === "string" && params.model !== "" ? params.model : undefined;
       const thinking = typeof params?.thinking === "string" && params.thinking !== "" ? params.thinking : undefined;
+      // D024: 生效 model 缺失 → 拒绝 (禁止静默继承 pi 默认模型), 报错引导传参.
+      const effectiveModel = effectiveModelOf(model, agent);
+      if (!effectiveModel) {
+        const msg = `agent "${agent.name}" 缺少生效 model: 未传 model 且 settings.json 未配置 subagent.${agent.name}.model. 委派前请先调用 subagent-llm-select skill 按任务画像选定模型再传 model.`;
+        logEvent({ level: "warn", event: "tool.execute.model_missing", agent: agent.name, errorMessage: msg });
+        return { content: [{ type: "text", text: msg }], details: {}, isError: true };
+      }
       // ISSUE-03: timeoutMs 参数提取 — 原始数值透传 (0/负数/NaN/非整数由 runSingleAgent 校验层统一兜底报错,
       // 修复前被此处 >0 过滤成 undefined 静默按默认 15min 跑, 校验层不可达).
       const timeoutMs = typeof params?.timeoutMs === "number" ? params.timeoutMs : undefined;
@@ -579,7 +625,7 @@ export default function (pi: ExtensionAPI) {
       const explicitBudget = params?.usageBudget as number | undefined;
       // 强制预算 (用户协议): 未显式传 → 自动 0.7 × 子代理模型窗口 (window 查询 modelRegistry, 与父会话同源);
       // 载荷携带 budget/auto 供父会话诊断 (中止 content 亦报出).
-      const eff = resolveEffectiveUsageBudget(explicitBudget, effectiveModelOf(model, agent), _ctx);
+      const eff = resolveEffectiveUsageBudget(explicitBudget, effectiveModel, _ctx);
       // TS-004: 取消监听 (AbortSignal) 透传 — abort → SIGTERM → 3s SIGKILL (M3-01 考察点 4);
       // 本切片: onUpdate 透传 (M3-02 考察点 6 触发点/payload 见 single.ts).
       return runSingleAgent({ agent, task, model, thinking, cwd, timeoutMs, usageBudget: eff.budget, budgetAuto: eff.auto, ctx: _ctx, signal: _signal, onUpdate: feedOnUpdate });

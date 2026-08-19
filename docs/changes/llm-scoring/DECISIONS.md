@@ -155,6 +155,12 @@
 - 内容: 替代 D007. 用户比较 YAML 示例后选定: 每分可挂行内注释 (审分场景真实增益), 脚本解析稳 (标准 YAML parser vs 正则切表格). 代价: 引入 PyYAML 依赖 — 用户明示同意 (SKILL-MECHANICS 要求), 以 PEP 723 内联元数据承载, 无项目级依赖文件. 文件改名 llm-scores.yaml (数据, per-device) 与 scores-template.yaml (模板, 随包).
 - 实际影响: scores-template.yaml 替换 scores-template.md; ~/.pi/agent/slim-subagent/llm-scores.yaml 替换 .md; SKILL.md 与 D011 路径引用同步
 
+### D024 生效 model 缺失即报错, 删除静默继承
+- 状态: 当前有效
+- 约束性: 必须遵守
+- 内容: 用户裁定: "故意用默认模型"的前提不成立 — 故意就意味着已确定默认模型是什么, 那就该显式传参而不是依赖回退. 因此 single/parallel 执行前校验: model 传参与 agent 默认 (settings.json subagent.<name>.model) 都缺 → 报错引导 (按 subagent-llm-select 排序传参或配置默认), 不再静默继承子进程 pi 默认模型. resume 不受影响 (本来就不接受 model). bootstrap 兼容: 未配置默认模型的机器上 bootstrap 委派会收到明确报错, 父会话据此补传 model — 行为有定义. 副作用: 测试基座 writeAgent 一律补默认 model (noDefaultModel 豁免供 TC-012/013), writeSettings 改合并语义, TC-003a 语义反转 (原断言无 settings 不传 --model, 现断言拒绝).
+- 实际影响: slim-subagent/index.ts validateExecuteParams; test/helpers.ts; test/agents.test.ts TC-002a/TC-003a; test/log.test.ts TS-SMOKE; README.md
+
 ## 事实
 
 ### F001 scoped 模型解析机制

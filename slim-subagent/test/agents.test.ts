@@ -120,6 +120,7 @@ test("TC-002 explorer spawns without --tools and with default --model/--thinking
 test("TC-002a resolve-skill extension is injected via -e when present in agent dir", async () => {
   const home = makeTempHome();
   try {
+    writeDefaultSubagentSettings(home);
     const extDir = path.join(home, ".pi", "agent", "extensions");
     fs.mkdirSync(extDir, { recursive: true });
     const extPath = path.join(extDir, "resolve-skill.ts");
@@ -155,14 +156,22 @@ test("TC-003 worker spawns with no --tools and default --model/--thinking", asyn
 });
 
 // 无 settings subagent 块 → 无默认 model/thinking: argv 不带 --model/--thinking (走 pi 默认).
-test("TC-003a no subagent settings means no --model/--thinking in argv", async () => {
+test("TC-003a no settings and no model param is rejected (D024)", async () => {
   const home = makeTempHome();
+  const prevBinary = process.env.PI_SUBAGENT_PI_BINARY;
   try {
-    const { result, bundle } = await runSingleWithBundle(home, { agent: "explorer", task: "探查" });
-    assert.equal(result.isError, undefined);
-    assert.ok(!bundle.argv.includes("--model"), "无 settings 配置 → 不加 --model");
-    assert.ok(!bundle.argv.includes("--thinking"), "无 settings 配置 → 不加 --thinking");
+    // D024: 静默继承子进程 pi 默认模型的回退已删除 — 生效 model 缺失即报错引导传参, 不产生 spawn.
+    process.env.PI_SUBAGENT_PI_BINARY = FAKE_PI;
+    await withHome(home, async () => {
+      const tool = captureTool();
+      const result = await tool.execute("call-1", { agent: "explorer", task: "探查" }, undefined, undefined, { cwd: home } as ExtensionContext);
+      assert.equal(result.isError, true);
+      const text = result.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+      assert.ok(text.includes("model"), "报错应引导传 model 参数");
+    });
   } finally {
+    if (prevBinary === undefined) delete process.env.PI_SUBAGENT_PI_BINARY;
+    else process.env.PI_SUBAGENT_PI_BINARY = prevBinary;
     cleanup(home);
   }
 });
