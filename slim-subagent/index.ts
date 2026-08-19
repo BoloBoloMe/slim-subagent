@@ -596,7 +596,7 @@ export default function (pi: ExtensionAPI) {
           toolCallId: (context as { toolCallId?: string } | undefined)?.toolCallId ?? "",
           details: (result.details ?? {}) as ProjectionInput["details"],
         });
-        if (!nodes || nodes.length === 0) return new Text(theme.fg("muted", "(no run data)"), 0, 0);
+        if (!nodes || nodes.length === 0) return new Text("", 0, 0); // 无运行路径 (list/校验失败): 不渲卡
         return renderRunCard(nodes, { density: "cozy", expanded }, context as { invalidate?: () => void } | undefined);
       } catch (e) {
         // L44 (warn): renderResult 异常 → 记日志 + 最简占位 (不影响主流程/返回).

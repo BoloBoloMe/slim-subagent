@@ -9,9 +9,9 @@ import extensionFactory from "../index.ts";
 // M2-D008 钉死的 10 参数
 const PINNED_PARAMS = ["agent", "task", "tasks", "model", "thinking", "timeoutMs", "usageBudget", "cwd", "action", "id"];
 
-// 工具描述钉版原文 (v6: 删与 snippet 重复的委派偏置句, 只留阻塞语义 + 接口速记 + list/resume 操作语义)
+// 工具描述钉版原文 (v7: D020 尾部增选型指针句 — 委派前先调 subagent-llm-select skill)
 const PINNED_DESCRIPTION =
-  '调用后阻塞等待结果. 单次: agent + task; 并行: tasks[]; action:"list" 发现 agents; "resume" + id 恢复中止的运行.';
+  '调用后阻塞等待结果. 单次: agent + task; 并行: tasks[]; action:"list" 发现 agents; "resume" + id 恢复中止的运行. 委派前先调用 subagent-llm-select skill 按任务画像排序选定 model 再传参.';
 
 function captureRegistration(): {
   name: string;

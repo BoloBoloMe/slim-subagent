@@ -228,3 +228,8 @@ test("RunNode shape smoke", () => {
   };
   assert.equal(node.status, "pending");
 });
+// list/校验失败路径回归: 空 details (无 mode/results) 不是运行, 投影必须为空,
+// 否则 renderResult 渲染出 phantom active 卡 (⠋ · active · model — · ctx —).
+test("empty details (list/validate-fail) projects zero nodes", () => {
+  assert.deepEqual(projectSlimDetailsToRunNodes({ toolCallId: "tc-list", details: {} }), []);
+});

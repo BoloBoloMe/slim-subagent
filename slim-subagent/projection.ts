@@ -275,6 +275,9 @@ export function projectSlimDetailsToRunNodes(input: ProjectionInput): RunNode[] 
   const d = input.details as Record<string, unknown> & { mode?: string };
   const mode = d.mode;
   const hasResults = Array.isArray(d.results);
+  // list/校验失败等无运行路径返回空 details: 投影为空, 防 renderResult 渲 phantom active 卡.
+  // 真实运行的 live/final 帧恒带 mode (single/parallel) 或 results, 不会误判.
+  if (mode === undefined && !hasResults) return [];
   if (mode === "parallel" || (mode === undefined && hasResults)) {
     return projectParallel(d, input.callParams as ProjectionCallParams | undefined);
   }
