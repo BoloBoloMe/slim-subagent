@@ -207,7 +207,7 @@ test("TC-002b parallel batch run id rejected", async () => {
   }
 });
 
-test("TC-003 resume param validation: missing id / missing task / model/thinking rejected", async () => {
+test("TC-003 resume param validation: missing id / missing task / model rejected", async () => {
   const home = makeTempHome();
   try {
     writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\n");
@@ -223,13 +223,37 @@ test("TC-003 resume param validation: missing id / missing task / model/thinking
     assert.equal(noTask.isError, true);
     assert.ok(resultText(noTask).includes("task"), `缺 task 应报错: ${resultText(noTask)}`);
 
-    // 带 model → 同用报错 (调和 6); 带 thinking 同语义.
+    // 带 model → 报错 (已建子代理不支持中途换模型, 调和 6); thinking 可覆盖 (见 TC-003b).
     const withModel = await runTool(home, { action: "resume", id: idA, task: "继续", model: "other-model" });
     assert.equal(withModel.isError, true);
     assert.ok(resultText(withModel).includes("model"), `model 覆盖应报错: ${resultText(withModel)}`);
-    const withThinking = await runTool(home, { action: "resume", id: idA, task: "继续", thinking: "low" });
-    assert.equal(withThinking.isError, true);
-    assert.ok(resultText(withThinking).includes("thinking"), `thinking 覆盖应报错: ${resultText(withThinking)}`);
+  } finally {
+    cleanup(home);
+  }
+});
+
+// thinking 覆盖合法 (中断恢复时调整思考级别): 覆盖值进 argv --thinking, 且 settle 后写回 run.json 快照.
+test("TC-003b resume accepts thinking override and persists it to run.json", async () => {
+  const home = makeTempHome();
+  try {
+    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查\n");
+    writeSettings(home, { subagent: { Alpha: { model: "fake-model", thinking: "high" } } });
+    const single = await runTool(home, { agent: "Alpha", task: "最初任务" });
+    const runId = (single.details as SingleDetails).runId;
+    const sessionDir = (single.details as SingleDetails).sessionDir;
+
+    const bundlePath = path.join(home, "resume-bundle.json");
+    const resumed = await withFakePi(home, "assistant-stop", { bundlePath }, async () => {
+      const tool = captureTool();
+      const ctx = { cwd: home } as ExtensionContext;
+      return tool.execute("call-1", { action: "resume", id: runId, task: "继续", thinking: "low" }, undefined, undefined, ctx);
+    });
+    assert.equal(resumed.isError, undefined, `thinking 覆盖不应报错: ${resultText(resumed)}`);
+    const args = (JSON.parse(fs.readFileSync(bundlePath, "utf-8")) as { argv: string[] }).argv;
+    assert.equal(args[args.indexOf("--thinking") + 1], "low", "--thinking 用覆盖值, 非 run.json 快照");
+    assert.equal(args[args.indexOf("--model") + 1], "fake-model", "--model 仍按快照");
+    const runJson = JSON.parse(fs.readFileSync(path.join(sessionDir, "run.json"), "utf-8")) as { thinking?: string };
+    assert.equal(runJson.thinking, "low", "settle 后 run.json thinking 快照写回覆盖值");
   } finally {
     cleanup(home);
   }

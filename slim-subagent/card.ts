@@ -17,7 +17,7 @@ import type { DisplayStatus, RunNode, SlimUsage } from "./projection.ts";
 
 const SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"; // 10 帧, 90ms 轮转
 const SPINNER_MS = 90;
-const HINT = "alt+v 会话 · /agent-diagnose 诊断"; // D009 卡尾固定提示
+const HINT = "alt+v 会话"; // D009 卡尾固定提示
 const INDENT_S = "   "; // single 明细行缩进
 const INDENT_C = "   "; // parallel child 状态行缩进
 const INDENT_CC = "     "; // parallel child 明细行缩进

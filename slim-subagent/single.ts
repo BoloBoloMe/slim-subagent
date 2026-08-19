@@ -262,7 +262,7 @@ function sessionPaths(runId: string): { sessionDir: string; sessionFile: string 
 // 导出: resume.ts 复用 (resume settle 补丁写同源).
 export function writeRunJsonSettle(
   sessionDir: string,
-  patch: { endedAtMs: number; finalStatus: string | undefined; usage: Usage },
+  patch: { endedAtMs: number; finalStatus: string | undefined; usage: Usage; thinking?: string },
 ): void {
   try {
     const runJsonPath = path.join(sessionDir, "run.json");
@@ -272,6 +272,8 @@ export function writeRunJsonSettle(
       ...existing,
       endedAtMs: patch.endedAtMs,
       ...(patch.finalStatus !== undefined ? { finalStatus: patch.finalStatus } : {}),
+      // resume thinking 覆盖 → 写回快照 (见 resume.ts); 首笔字段外不覆盖其他结构.
+      ...(patch.thinking !== undefined ? { thinking: patch.thinking } : {}),
       // D005: usage 摘要 (Session Viewer 需 elapsed/usage 一手证据; 不覆盖首笔字段之外的结构).
       usage: patch.usage,
     };

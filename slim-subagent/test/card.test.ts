@@ -80,7 +80,7 @@ test("TS-001 single card 分段展开: recentTools ≤3 逐行 + output 预览 +
   const lines = renderRunNodeLines(activeSingle(), 200, { density: "cozy" });
   assert.ok(lines.some((l) => l.includes("→ read src/index.ts")), "recentTools 逐条行");
   assert.ok(lines.some((l) => l.includes('last: "找到 3 个候选入口…"')), "output 预览行");
-  assert.ok(lines[lines.length - 1].includes("alt+v 会话 · /agent-diagnose 诊断"), "卡尾固定提示文案");
+  assert.ok(lines[lines.length - 1].includes("alt+v 会话"), "卡尾固定提示文案");
 });
 
 test("TS-001 compact density 预省 cost/CH/cap/timeout, 保留状态/usage", () => {
@@ -190,7 +190,7 @@ test("TS-002 aggregate row + pending prebuilt row + child double-line tree", () 
   // done/failed child 状态行.
   assert.ok(lines.some((l) => l.includes("✓ worker") && l.includes("done 00:37")), "done child 行");
   assert.ok(lines.some((l) => l.includes("✗ reviewer") && l.includes("stop error") && l.includes("cap 80k")), "failed child 行 stop + cap");
-  assert.ok(lines[lines.length - 1].includes("alt+v 会话 · /agent-diagnose 诊断"), "parallel 卡尾提示文案");
+  assert.ok(lines[lines.length - 1].includes("alt+v 会话"), "parallel 卡尾提示文案");
 });
 
 // ---- TS-003: computeCh ----

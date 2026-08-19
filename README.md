@@ -7,12 +7,12 @@
 ## 能力
 
 - **单次委派**: `agent` + `task`, 前台阻塞等待结果
-- **并行**: `tasks[]` (≤8, 并发 4), 全部跑完汇总, 失败逐任务报告
+- **并行**: `tasks[]` (≤8, 并发 4), 全部跑完汇总, 失败逐任务报告; 长度 1 时等价 `task` (走单次管线, 可 resume)
 - **模型选择**: `model` 传参覆盖 agent 默认 model (settings.json `subagent.<name>.model`), 均无则继承 pi 默认模型
 - **思考深度**: `thinking` 传参覆盖 agent 默认 thinking (settings.json `subagent.<name>.thinking`, 取值 off/minimal/low/medium/high/xhigh/max), 均无则走模型/pi 默认
 - **timeout**: `timeoutMs` (默认 15min), 触发 SIGINT→SIGTERM→SIGKILL 三阶段终止, 返回诊断载荷 (用量/上下文占用/恢复建议)
 - **usageBudget**: 累计 `input+output+cacheWrite` 触顶即运行中终止
-- **resume**: `action:"resume"` + `id` (从头报前缀或随机尾段) 恢复被中止的运行, 带并发锁 (不排队) 与 7 天按龄 GC
+- **resume**: `action:"resume"` + `id` (从头报前缀或随机尾段) 恢复被中止的运行, 带并发锁 (不排队) 与 7 天按龄 GC; `thinking` 可覆盖 (写回 run.json 快照), `model` 不可换
 - **list**: `action:"list"` 名册 (内置 explorer/worker/reviewer + `~/.pi/agent/agents/` 用户自定义)
 
 ## 安装

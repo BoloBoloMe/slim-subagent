@@ -20,7 +20,7 @@ import { projectSlimDetailsToRunNodes } from "./projection.ts";
 import type { ProjectionInput } from "./projection.ts";
 import { discoverAgents, formatAgentList } from "./agents.ts";
 import type { AgentConfig } from "./agents.ts";
-import { runSingleAgent, makeRunId, sessionRootDir, sessionsRootDir, resolveEffectiveUsageBudget } from "./single.ts";
+import { runSingleAgent, makeRunId, sessionRootDir, resolveEffectiveUsageBudget } from "./single.ts";
 import type { SingleDetails, SingleStreamDetails, StreamUpdateCallback, Usage } from "./single.ts";
 import { runResume, runSessionGc } from "./resume.ts";
 // 目录布局单一真相 (候选贰): parallel child run-<idx> 约定由 run-record.ts 拥有.
@@ -43,10 +43,10 @@ const PER_TASK_OUTPUT_CAP = 50 * 1024;
 const TOOL_DESCRIPTION =
   "调用后阻塞等待结果. 单次: agent + task; 并行: tasks[]; action:\"list\" 发现 agents; \"resume\" + id 恢复中止的运行.";
 
-// /agent-diagnose 注入的用户消息 (LLM 自由诊断, PRD: docs/changes/subagent-llm-diagnose/prd.md):
-// 命令本身零逻辑, 诊断由当前会话 LLM 读落盘数据源完成; 提示词须自含数据源位置/字段口径/汇报纪律.
+// /subagent-diagnose 注入的用户消息 (LLM 自由诊断, PRD: docs/changes/subagent-llm-diagnose/prd.md):
+// 命令本身零逻辑, 诊断由新开会话的 LLM 读落盘数据源完成; 提示词须自含数据源位置/字段口径/汇报纪律.
 const DIAGNOSE_PROMPT =
-  "[subagent 诊断请求 — 由 /agent-diagnose 注入]\n" +
+  "[subagent 诊断请求 — 由 /subagent-diagnose 注入]\n" +
   "请只读诊断 subagent 运行情况, 找出可能存在的 bug 与可优化点, 然后向我汇报.\n\n" +
   "数据源 (均只读):\n" +
   "- 结构化日志: ~/.pi/subagent_log/subagent-YYYYMMDD.log (JSONL, 每行一个事件; 字段 ts/level/event/eventId/runId/batchRunId/childIndex/agent/model/status/error/data; level 从 trace 到 fatal)\n" +
@@ -73,9 +73,9 @@ const TaskItem = Type.Object({
 const SubagentParams = Type.Object({
   agent: Type.Optional(Type.String({ description: "agent 名" })),
   task: Type.Optional(Type.String({ description: "单次任务; 与 tasks 互斥" })),
-  tasks: Type.Optional(Type.Array(TaskItem, { description: "parallel 任务数组, ≤8" })),
-  model: Type.Optional(Type.String({ description: "覆盖 agent 默认 model (settings.json subagent.<name>.model)" })),
-  thinking: Type.Optional(Type.String({ description: "覆盖 agent 默认 thinking 深度 (off/minimal/low/medium/high/xhigh/max)" })),
+  tasks: Type.Optional(Type.Array(TaskItem, { description: "parallel 任务数组, ≤8; 长度为 1 时等价 task (走单次管线)" })),
+  model: Type.Optional(Type.String({ description: "覆盖 agent 默认 model (settings.json subagent.<name>.model); action:\"resume\" 不接受 (已建子代理不支持中途换模型)" })),
+  thinking: Type.Optional(Type.String({ description: "覆盖 agent 默认 thinking 深度 (off/minimal/low/medium/high/xhigh/max); resume 时也可覆盖" })),
   timeoutMs: Type.Optional(Type.Number({ description: "超时毫秒, 默认 900000" })),
   usageBudget: Type.Optional(Type.Number({ description: "累计 input+output+cacheWrite token 上限, 触顶中止" })),
   cwd: Type.Optional(Type.String({ description: "子代理工作目录, 默认继承父会话" })),
@@ -449,8 +449,7 @@ export default function (pi: ExtensionAPI) {
     runSessionGc();
     logEvent({ level: "info", event: "gc.logs.start" });
     runLogGc();
-    // ISSUE-08 (D011): viewer 数据源磁盘回补最近 20 批 (GC 之后, 回补当前可见 run).
-    try { viewerStore.backfill(sessionsRootDir()); } catch { /* 回补失败不阻断启动 */ }
+    // Viewer 只展示当前会话开启的子代理会话 (live onUpdate 喂入), 不做磁盘回补.
   });
 
   pi.registerTool({
@@ -478,10 +477,28 @@ export default function (pi: ExtensionAPI) {
       onUpdate: StreamUpdateCallback | undefined, // M3-02 考察点 6: 流式更新回调透传 single 管线
       _ctx: ExtensionContext,
     ): Promise<AgentToolResult> {
-      const params = _params as
+      let params = _params as
         | { action?: unknown; agent?: unknown; task?: unknown; tasks?: unknown; usageBudget?: unknown; model?: unknown; thinking?: unknown; timeoutMs?: unknown; cwd?: unknown; id?: unknown; since?: unknown; levelMin?: unknown; limit?: unknown; writeReport?: unknown }
         | null
         | undefined;
+
+      // tasks 长度为 1 → 归并单次形态 (item 字段优先, 缺省回退顶层默认), 走下方 single 校验与执行路径:
+      // 消除 tasks[1] 走 parallel 管线的静默降级 (50KB 截断/聚合壳/批次目录不可 resume).
+      // 顶层 task 同时存在时跳过归并: 否则会覆盖 task/清空 tasks, 掩盖 task 与 tasks 互斥校验 (validateExecuteParams).
+      const hasTopLevelTask = typeof params?.task === "string" && params.task.trim() !== "";
+      if (Array.isArray(params?.tasks) && params.tasks.length === 1 && !hasTopLevelTask) {
+        const item = (params.tasks as Record<string, unknown>[])[0] ?? {};
+        params = {
+          ...params,
+          tasks: undefined,
+          agent: typeof item.agent === "string" ? item.agent : params?.agent,
+          task: item.task,
+          model: item.model ?? params?.model,
+          thinking: item.thinking ?? params?.thinking,
+          timeoutMs: item.timeoutMs ?? params?.timeoutMs,
+          usageBudget: item.usageBudget ?? params?.usageBudget,
+        };
+      }
 
       // L01 (info): 工具调用开始 — 只记脱敏 taskPreview, 不落完整 task; mode 按 action/tasks 推导.
       const execMode: "single" | "parallel" | "list" | "resume" =
@@ -591,19 +608,25 @@ export default function (pi: ExtensionAPI) {
 
   // ---- ISSUE-08: 命令面 + 快捷键 (M07 D009) ----
 
-  pi.registerCommand("agent-sessions", {
-    description: "打开/关闭 subagent Session Viewer (Timeline + 子代理会话; Esc 关闭)",
+  pi.registerCommand("subagent-sessions", {
+    description: "打开/关闭 subagent Session Viewer (Timeline + 子代理会话, 仅当前会话; Esc 关闭)",
     handler: async (_args, ctx) => {
       if (ctx.mode !== "tui" || !ctx.hasUI) { ctx.ui.notify("Session Viewer 需要 tui 模式", "warning"); return; }
       openViewer(ctx.ui as unknown as ViewerUi);
     },
   });
 
-  pi.registerCommand("agent-diagnose", {
-    description: "诊断 subagent 运行: 注入诊断提示词, 由当前会话 LLM 读落盘日志/子会话, 找出 bug 与优化点并汇报",
+  pi.registerCommand("subagent-diagnose", {
+    description: "诊断 subagent 运行: 强制开启新会话, 注入诊断提示词, 由 LLM 读落盘日志/子会话, 找出 bug 与优化点并汇报",
     handler: async (_args, ctx) => {
-      pi.sendUserMessage(DIAGNOSE_PROMPT, { deliverAs: "followUp" });
-      if (ctx.mode === "tui" && ctx.hasUI) ctx.ui.notify("已注入 subagent 诊断请求", "info");
+      // 强制新会话执行诊断 (不污染当前会话): withSession 回调拿到新会话 ctx 再注入提示词
+      // (会话替换后旧 ctx 失效, 注入必须放进 withSession).
+      const { cancelled } = await ctx.newSession({
+        withSession: async (newCtx) => {
+          await newCtx.sendUserMessage(DIAGNOSE_PROMPT, { deliverAs: "followUp" });
+        },
+      });
+      if (cancelled && ctx.mode === "tui" && ctx.hasUI) ctx.ui.notify("已取消 subagent 诊断", "info");
     },
   });
 

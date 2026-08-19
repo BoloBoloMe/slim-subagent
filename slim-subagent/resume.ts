@@ -1,6 +1,7 @@
 // slim-subagent resume 执行 + session 按龄 GC — ISSUE-06 TS-001~003 切片.
 // 范围: resume 寻址 (M3-03 考察点 1 移植规格 1-5) + 恢复 spawn (EXECUTION.md 调和 6/13/14:
-// agent 忽略复用 run.json 原 agent, model 同用报错, 沿用原 runId 不新建目录, --tools 按快照重建)
+// agent 忽略复用 run.json 原 agent, model 覆盖报错 (已建子代理不支持中途换模型), thinking 可覆盖,
+// 沿用原 runId 不新建目录, --tools 按快照重建)
 // + 并发锁 (M3-03 考察点 3 最小锁, TS-002) + 按龄 GC (M2-D005: 7 天, session_start 挂点, 锁豁免).
 // 不实现: parallel 组合恢复 (调和 12 报错), 内存态寻址, index 参数, buildRevivedAsyncTask 包装 (M3-03 删除项).
 
@@ -102,7 +103,7 @@ export function findRunForResume(id: string): ResumedRunInfo {
 // --session 原文件 + --model/--tools 按 run.json 快照 (agent 定义事后被删/改不影响恢复) +
 // --append-system-prompt 原 agent prompt 重建 + follow-up 原文追加 (接受中断 turn 重复, M3 §四 #5).
 
-// execute (resume) 主入口: 参数校验 (调和 6: id+task 必填, model 同用报错) → 寻址/校验 → 恢复 spawn
+// execute (resume) 主入口: 参数校验 (调和 6: id+task 必填, model 覆盖报错, thinking 可覆盖) → 寻址/校验 → 恢复 spawn
 // → 复用 single 结果回收全路径 (assembleSingleResult) + resumed:true + 原 runId/sessionDir (调和 13).
 // 错误一律转 isError 结果 (不 throw), 对齐 index.ts 校验层形态.
 export async function runResume(
@@ -122,11 +123,10 @@ export async function runResume(
   const task = typeof params.task === "string" ? params.task : undefined;
   if (!task || task.trim() === "") return err('action:"resume" 须提供 task (follow-up 文本)');
   if (typeof params.model === "string" && params.model.trim() !== "") {
-    return err('action:"resume" 不接受 model 覆盖 (复用原 run 的 model)');
+    return err('action:"resume" 不接受 model 覆盖 (已创建的子代理不支持中途更换模型; 换模型请用新 model 发起新的 subagent 调用)');
   }
-  if (typeof params.thinking === "string" && params.thinking.trim() !== "") {
-    return err('action:"resume" 不接受 thinking 覆盖 (复用原 run 的 thinking)');
-  }
+  // thinking 可覆盖 (中断恢复时调整思考级别是合法场景); 覆盖值生效后写回 run.json 快照, 后续 resume 默认沿用.
+  const thinkingOverride = typeof params.thinking === "string" && params.thinking.trim() !== "" ? params.thinking.trim() : undefined;
   // timeoutMs/usageBudget 可覆盖 (对齐 single 校验层语义, 非法值同文案报错).
   if (params.timeoutMs !== undefined && params.timeoutMs !== null) {
     if (typeof params.timeoutMs !== "number" || !Number.isFinite(params.timeoutMs) || params.timeoutMs <= 0 || !Number.isInteger(params.timeoutMs)) {
@@ -201,7 +201,8 @@ export async function runResume(
       promptFile = path.join(tmpDir, `prompt-${safeName}.md`);
       fs.writeFileSync(promptFile, agent.systemPrompt, { encoding: "utf-8", mode: 0o600 });
     }
-    const args = buildSpawnArgs({ task, sessionFile: run.sessionFile, model: run.model, thinking: run.thinking, tools: run.tools, promptFile, tmpDir, taskFileBase: "task-resume" });
+    const thinking = thinkingOverride ?? run.thinking;
+    const args = buildSpawnArgs({ task, sessionFile: run.sessionFile, model: run.model, thinking, tools: run.tools, promptFile, tmpDir, taskFileBase: "task-resume" });
     // L38 (info): resume 子进程 spawn 前 (与 single.spawn.start 同构载荷).
     logEvent({ level: "info", event: "resume.spawn.start", mode: "resume", runId: run.runId, agent: run.agent, model: run.model, timeoutMsExplicit: timeoutMs, usageBudgetExplicit: eff.budget });
     // M02 D002: spawn 前捕获 (与 resume settle 补丁 endedAtMs 配对).
@@ -216,6 +217,8 @@ export async function runResume(
       endedAtMs: result.endedAtMs ?? Date.now(),
       finalStatus: result.stopReason ?? (result.exitCode === 0 ? "done" : "failed"),
       usage: result.usage,
+      // thinking 覆盖生效后写回快照 (本次实际生效值, 无论成败), 后续 resume 默认沿用.
+      ...(thinkingOverride !== undefined ? { thinking: thinkingOverride } : {}),
     });
     // L39 (info): resume 结果收尾.
     logEvent({ level: "info", event: "resume.result.final", mode: "resume", runId: run.runId, agent: run.agent, data: { resumed: true } });

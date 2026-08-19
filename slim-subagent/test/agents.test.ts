@@ -75,7 +75,10 @@ test("TC-001 builtin agents discoverable with full tools and default model", asy
     }
     // 数据面 (M1-D008): 均无 tools 字段 (全工具, spawn 不加 --tools); 默认 model/thinking 来自 settings.json subagent 块
     // (explorer/worker=high, reviewer=max); frontmatter 已不携带 model/thinking; body (system prompt) 非空.
-    const builtin = discoverAgents().filter((a) => ["explorer", "reviewer", "worker"].includes(a.name));
+    // 须在 withHome 内 discoverAgents (读临时 HOME 的 settings.json, 而非真实 ~/.pi/agent/settings.json).
+    const builtin = await withHome(home, async () =>
+      discoverAgents().filter((a) => ["explorer", "reviewer", "worker"].includes(a.name)),
+    );
     assert.equal(builtin.length, 3);
     for (const name of ["explorer", "reviewer", "worker"]) {
       assert.equal(builtin.find((a) => a.name === name)?.tools, undefined, `${name} 无 tools 字段 = 全工具`);

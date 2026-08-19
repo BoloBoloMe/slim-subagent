@@ -404,11 +404,12 @@ test("TC-008 parallel item with empty or non-string task is rejected", async () 
     const r1 = await runParallel(home, { tasks: [{ agent: "Alpha", task: "" }] });
     assert.equal(r1.result.isError, true);
     assert.ok(resultText(r1.result).includes("task"), resultText(r1.result));
-    const r2 = await runParallel(home, { tasks: [{ agent: "Alpha", task: 123 }] });
+    // 多项批次 (走 parallel 管线): 非 string task 报错应点名出错 item 下标.
+    const r2 = await runParallel(home, { tasks: [{ agent: "Alpha", task: "ok" }, { agent: "Alpha", task: 123 }] });
     assert.equal(r2.result.isError, true);
     const text = resultText(r2.result);
     assert.ok(text.includes("task"), text);
-    assert.ok(text.includes("[0]"), "报错应点名出错 item 下标");
+    assert.ok(text.includes("[1]"), "报错应点名出错 item 下标");
   } finally {
     cleanup(home);
   }
@@ -447,10 +448,10 @@ test("TC-010 parallel summary truncates per-task output at PER_TASK_OUTPUT_CAP",
   const home = makeTempHome();
   try {
     writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");
-    // big-output 场景: assistant 输出 60KB (> 50KB cap).
-    const { result } = await runParallel(home, { tasks: [{ agent: "Alpha", task: "big" }] }, { scenario: "big-output" });
+    // big-output 场景: assistant 输出 60KB (> 50KB cap); 两项任务保持 parallel 管线 (单项归并 single).
+    const { result } = await runParallel(home, { tasks: [{ agent: "Alpha", task: "big" }, { agent: "Alpha", task: "small" }] }, { scenario: "big-output" });
     const text = resultText(result);
-    assert.ok(text.includes("Parallel: 1/1 succeeded"), text);
+    assert.ok(text.includes("Parallel: 2/2 succeeded"), text);
     assert.ok(text.includes("[Output truncated:"), "汇总应含截断标记");
     const block = text.slice(text.indexOf("### [Alpha]"));
     const markerIdx = block.indexOf("[Output truncated:");
@@ -471,4 +472,26 @@ test("TC-011 truncateParallelOutput caps by bytes and appends marker", async () 
   assert.ok(Buffer.byteLength(t, "utf8") <= 50 * 1024 + 200, `截断后 ≤ cap 量级, got ${Buffer.byteLength(t, "utf8")}`);
   assert.ok(t.endsWith("Full output preserved in tool details.]"), "标记应声明完整输出保留在 details");
   assert.equal(truncateParallelOutput("small"), "small", "小输出原样返回");
+});
+
+// tasks 长度 1 → 归并 single 管线 (无聚合壳/无 50KB 截断/run.json 落盘可 resume, 等价 task 形态).
+test("TC-012 tasks with single item is normalized to single pipeline", async () => {
+  const home = makeTempHome();
+  try {
+    writeAgent(home, "alpha.md", "name: Alpha\ndescription: 处理只读审查");
+    const { result, details } = await runParallel(home, {
+      tasks: [{ agent: "Alpha", task: "唯一任务" }],
+    });
+    assert.equal(result.isError, undefined, resultText(result));
+    assert.ok(!resultText(result).includes("Parallel:"), `不应有聚合壳: ${resultText(result)}`);
+    assert.notEqual((details as { mode?: string }).mode, "parallel", "details 不应是 parallel 信封");
+    const singleDetails = details as unknown as SingleDetails;
+    assert.ok(singleDetails.runId !== "", "应有 single runId");
+    assert.ok(
+      fs.existsSync(path.join(singleDetails.sessionDir, "run.json")),
+      "应落盘 run.json (single 布局, 可 resume)",
+    );
+  } finally {
+    cleanup(home);
+  }
 });
