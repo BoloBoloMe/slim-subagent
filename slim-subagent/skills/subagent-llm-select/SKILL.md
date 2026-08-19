@@ -32,6 +32,7 @@ description: 委派 subagent 前按任务画像给可用模型排序选 model; �
    - 表中未收录的候选模型全维按 1 (与基准持平) 处理, 标注 `[未评分]` — 不禁止选用, 否则新模型永远没机会积累评分
    完成标准: 每个候选模型有一个可手工复算的总分.
 5. **委派并报告**. 总分第一者作 `model` 传参. 报告含: 画像名, 每模型总分, `[未评分]` 标注. 总分接近时并列呈现并说明, 不假装有区分度.
+   thinking 定值: 调用方显式要求 > agent 默认 > high. 最终值必须在模型支持集内 — pi 对不支持的级别静默 clamp (先向上再向下取最近), 不校验会让意图漂移 (如 k3 连 off 都不支持, 会被 clamp 成 low). 支持集从 `models-store.json` 现查: `reasoning=false` 只有 off; `thinkingLevelMap` 中值为 null 的级别不支持, xhigh/max 须显式映射, 无 map 则 off~high.
 
 ## bootstrap
 

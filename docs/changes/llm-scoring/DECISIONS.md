@@ -107,7 +107,7 @@
 ### D016 已知风险与缓解
 - 状态: 当前有效
 - 约束性: 可调整
-- 内容: 盲区扫描确认三项, 均接受不阻塞: (1) 触发可靠性 — skill 靠 description 匹配触发可能被跳过; 已由 D020 强化 (指针置入工具描述与 model 参数描述并实测生效), 残余风险为 LLM 忽略明确指令, 低概率; (2) 同名模型歧义 — 已用全限定名规则缓解 (见 F006); (3) 3 模型排序退化 — scoped 仅 3 个且分数接近时排序对权重敏感, 并列/微差为正常输出, SKILL.md 步骤 5 要求并列呈现.
+- 内容: 盲区扫描确认三项, 均接受不阻塞: (1) 触发可靠性 — skill 靠 description 匹配触发可能被跳过; 已由 D020 强化 (指针置入工具描述与 model 参数描述并实测生效), 残余风险为 LLM 忽略明确指令, 低概率; (2) 同名模型歧义 — 已用全限定名规则缓解 (见 F006); (3) 3 模型排序退化 — scoped 仅 3 个且分数接近时排序对权重敏感, 并列/微差为正常输出, SKILL.md 步骤 5 要求并列呈现; (4) thinking 级别兼容 — 各模型支持集不同且 pi 静默 clamp, 已由 D021 处理.
 
 ### D017 评分语义修正: multimodal 维度无比率锚点
 - 状态: 当前有效
@@ -134,6 +134,13 @@
 - 约束性: 必须遵守
 - 内容: D016 风险 1 兑现 (实际使用中主代理未触发 skill 直接委派). 修复: (1) TOOL_DESCRIPTION 末尾加"委派前先调用 subagent-llm-select skill 按任务画像排序选定 model 再传参"; (2) 两处 model 参数描述加"取值应来自 subagent-llm-select 排序结果". 原理: 把注意力锚点从浮在 skill 列表的 description 移到调用点必读的文字. 纯文案改动, 不含选型逻辑, 不违反 D001. 已在新开 pi 会话实测: 主代理先读 SKILL.md → 读评分表 → 现算价格分 → 带 model 传参委派, 全链路生效.
 - 实际影响: slim-subagent/index.ts (TOOL_DESCRIPTION + 2 处 model 参数描述), slim-subagent/package.json 补 "type": "module"
+
+### D021 thinking 级别按模型支持集定值
+- 状态: 当前有效
+- 约束性: 必须遵守
+- 内容: 用户发现的盲点: 不同模型支持的 thinking 级别不同, 父会话传 thinking 时无校验. 机制事实: pi 对不支持的级别静默 clamp (pi-ai clampThinkingLevel, 先向上再向下取最近), 不报错但意图漂移 (如 k3 的 off 会被 clamp 成 low). 规则入 SKILL.md 步骤 5: thinking 取值顺序 调用方显式要求 > agent 默认 > high, 最终值必须在模型支持集内; 支持集从 models-store.json 现查 (reasoning/thinkingLevelMap, 与价格派生同一数据源, 零代码). 当前 scoped 3 模型支持集: deepseek-v4-flash = off/low/high/max; k3 = low/high/max (无 off); kimi-for-coding = off~high (无 xhigh/max). 既有配置 (explorer/reviewer max+flash, worker high+kfc) 经验证均兼容, 无需调整.
+- 依赖事实: F008
+- 实际影响: SKILL.md 步骤 5
 
 ## 事实
 
@@ -171,3 +178,9 @@
 - 状态: 当前有效
 - 来源: pi dist/core/package-manager.js `resolveLocalExtensionSource` + 实验复现 (移走 skills/ 工具恢复, 放回则消失)
 - 内容: local path 指向目录时, pi 先按包规则找约定资源目录 (extensions/skills/prompts/themes); 四类目录一个都不存在才回退为"目录本身即扩展" (进而加载 index.ts). slim-subagent 原靠此回退加载 index.ts; 新增 skills/ 后回退不再触发, 扩展静默消失, skill 正常. 修复: 加 package.json 显式声明 `"pi": {"extensions":["./index.ts"], "skills":["./skills"]}`. 教训: 给纯扩展目录新增任何约定资源目录前, 必须先补 package.json manifest.
+
+### F008 thinking 级别支持机制
+- 状态: 当前有效
+- 来源: pi-ai dist/models.js getSupportedThinkingLevels/clampThinkingLevel, ~/.pi/agent/models-store.json
+- 内容: 支持集规则 — reasoning=false 仅 off; thinkingLevelMap 中值为 null 的级别不支持; xhigh/max 必须显式映射才支持; 无 map 的推理模型支持 off~high. clamp 策略: 请求级不可用则先向上后向下取最近支持级, 静默无告警. scoped 3 模型实测: deepseek-v4-flash map={minimal:null,low,medium:null,high,max}; k3 map={off:null,minimal:null,low,medium:null,high,xhigh:null,max}; kimi-for-coding 无 map.
+
