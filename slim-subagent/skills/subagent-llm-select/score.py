@@ -65,7 +65,7 @@ def price_scores(scoped: list[str], baseline: str) -> dict[str, float]:
                 units[full] = 0.75 * c.get("input", 0) + 0.25 * c.get("output", 0)
     base = units.get(baseline)
     if not base:
-        fail(f"基准 {baseline} 不在模型目录, 无法派生价格分")
+        fail(f"基准 {baseline} 不在模型目录; 走 bootstrap 重定基准")
     return {m: base / u for m, u in units.items() if u > 0}
 
 

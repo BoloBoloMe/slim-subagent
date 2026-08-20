@@ -4,25 +4,16 @@
 # multimodal 例外: 基准纯文本时该维无比率锚点, 用绝对能力档 (1=可用, 1.5+=强).
 # 维护: scoped 新增模型手动加条目 (全维 1 占位待评); 改分事件驱动, 同步 updatedAt 与 note.
 # model 键永远用 provider/model 全限定名 (同名模型存在于多个 provider).
+# baseline 由 bootstrap 据当前环境推荐并经我确认, 不硬编于此.
 
-baseline: opencode-go/deepseek-v4-flash  # 除 multimodal 外全维 = 1
+baseline:  # provider/model, bootstrap 时填入已确认基线
 
 models:
-  opencode-go/deepseek-v4-flash:
-    coding: 1
-    knowledge: 1
-    longctx: 1
-    multimodal: null
-    stability: 1
-    speed: 1
-    updatedAt: YYYY-MM-DD
-    note: 基准
-
-  # provider/model:
-  #   coding: 1      # 每维可挂行内注释记依据
+  # provider/model:        # 基线模型各维 = 1; 其余模型是相对基线的比率
+  #   coding: 1
   #   knowledge: 1
   #   longctx: 1
-  #   multimodal: 1
+  #   multimodal: null      # 纯文本基线该维 null; 每维可挂行内注释记依据
   #   stability: 1
   #   speed: 1
   #   updatedAt: YYYY-MM-DD
