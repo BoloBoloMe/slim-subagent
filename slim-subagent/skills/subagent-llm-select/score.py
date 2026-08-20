@@ -126,7 +126,8 @@ def main() -> None:
         total = sum(w * s for w, s in pairs) / wsum if wsum else 0.0
         rows.append((total, full, unscored, clamp(pref, supported_levels(full))))
 
-    rows.sort(reverse=True)
+    # D026: 已评分按总分降序, 未评分恒殿后 (但未被过滤, 仅存它时仍会被选).
+    rows.sort(key=lambda r: (r[2], -r[0]))
     print(f"画像: {profile}")
     for i, (total, full, unscored, thinking) in enumerate(rows, 1):
         tag = " [未评分]" if unscored else ""
