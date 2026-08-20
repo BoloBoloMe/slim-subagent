@@ -9,6 +9,7 @@
 # 规则与权重本脚本为唯一真相源; 分数数据在评分表 (per-device).
 import fnmatch
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -30,6 +31,7 @@ LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 AGENT_DIR = Path.home() / ".pi" / "agent"
 SCORES = AGENT_DIR / "slim-subagent" / "llm-scores.yaml"
 STORE = AGENT_DIR / "models-store.json"
+MODELS_JSON = AGENT_DIR / "models.json"  # 自定义 provider (如网关), 合并入目录, 覆盖同名
 SETTINGS = AGENT_DIR / "settings.json"
 AUTH = AGENT_DIR / "auth.json"
 
@@ -39,10 +41,25 @@ def fail(msg: str) -> None:
     sys.exit(1)
 
 
+def authed_providers() -> set[str]:
+    """有凭证 = auth.json 有条目, 或 models.json apiKey 非空 (字面量, 或 $ENV 引用的环境变量存在)."""
+    out = set(json.loads(AUTH.read_text(encoding="utf-8")).keys())
+    for provider, spec in STORE_OBJ.items():
+        key = spec.get("apiKey")
+        if not key:
+            continue
+        if key.startswith("$"):
+            if os.environ.get(key[1:]):
+                out.add(provider)
+        else:
+            out.add(provider)
+    return out
+
+
 def load_scoped() -> list[str]:
     """scoped = enabledModels (glob) 匹配目录 ∩ 有凭证 provider. --models CLI flag 不在内 (脚本不可得)."""
-    patterns = json.loads(SETTINGS.read_text()).get("enabledModels") or []
-    authed = set(json.loads(AUTH.read_text()).keys())
+    patterns = json.loads(SETTINGS.read_text(encoding="utf-8")).get("enabledModels") or []
+    authed = authed_providers()
     out = []
     for provider, spec in STORE_OBJ.items():
         if provider not in authed:
@@ -102,7 +119,7 @@ def main() -> None:
     profile, pref = sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "high"
     if not SCORES.exists():
         fail(f"评分表不存在: {SCORES} — 走 SKILL.md 的 bootstrap 流程建立")
-    table = yaml.safe_load(SCORES.read_text())
+    table = yaml.safe_load(SCORES.read_text(encoding="utf-8"))
     baseline = table["baseline"]
     entries = table.get("models") or {}
 
@@ -137,5 +154,7 @@ def main() -> None:
         print(f"委派: model={best} thinking={thinking}")
 
 
-STORE_OBJ = json.loads(STORE.read_text())
+STORE_OBJ = json.loads(STORE.read_text(encoding="utf-8"))
+if MODELS_JSON.exists():
+    STORE_OBJ.update(json.loads(MODELS_JSON.read_text(encoding="utf-8")).get("providers", {}))
 main()
