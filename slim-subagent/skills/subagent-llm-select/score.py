@@ -3,10 +3,13 @@
 # dependencies = ["pyyaml"]
 # ///
 # subagent-llm-select 的算分器: 一条命令给出委派结论, LLM 只需判画像 + 抄输出.
-# 用法: uv run python score.py <画像> [thinking偏好]
+# 用法: uv run python score.py <画像> [thinking偏好] [--exclude <model>]...
+# --exclude: 从候选剔除指定模型 (对抗任务互斥用), 可重复; 全名 provider/model 或裸 model id
+# (裸 id 同名跨 provider 时全部命中); 不在模型目录的排除项会报错.
 # 数据源 (pi 约定路径): 评分表 ~/.pi/agent/slim-subagent/llm-scores.yaml,
 # 模型目录/价格/thinking 支持集 ~/.pi/agent/models-store.json, scoped 列表 ~/.pi/agent/settings.json.
 # 规则与权重本脚本为唯一真相源; 分数数据在评分表 (per-device).
+import argparse
 import fnmatch
 import json
 import os
@@ -113,10 +116,33 @@ def clamp(level: str, supported: list[str]) -> str:
     return supported[0] if supported else "off"
 
 
+class Extend(argparse.Action):
+    """--exclude 可重复且每次可给多个值, 累加不覆盖."""
+    def __call__(self, parser, ns, values, option_string=None):
+        getattr(ns, self.dest).extend(values)
+
+
+def excluded_match(full: str, excluded: set[str]) -> bool:
+    """全名或裸 model id 命中即排除."""
+    return full in excluded or full.split("/", 1)[1] in excluded
+
+
 def main() -> None:
-    if len(sys.argv) < 2 or sys.argv[1] not in PROFILES:
-        fail(f"用法: score.py <画像> [thinking偏好]; 画像 = {'/'.join(PROFILES)}")
-    profile, pref = sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "high"
+    p = argparse.ArgumentParser(prog="score.py")
+    p.add_argument("profile", choices=list(PROFILES))
+    p.add_argument("thinking", nargs="?", default="high", choices=LEVELS)
+    p.add_argument("--exclude", action=Extend, nargs="*", default=[], metavar="MODEL",
+                   help="从候选剔除的模型 (对抗任务互斥用, 可重复/可多值; "
+                        "裸 id 同名跨 provider 全命中)")
+    args = p.parse_args()
+    profile, pref, excluded = args.profile, args.thinking, set(args.exclude)
+    # 排除项必须是目录内模型: 拦拼写错, 也防 --exclude 贪心吞掉后置位置参数后静默.
+    known = {f"{pr}/{m['id']}" for pr, spec in STORE_OBJ.items() for m in spec.get("models", [])}
+    known |= {f.split("/", 1)[1] for f in known}
+    unknown = excluded - known
+    if unknown:
+        fail(f"排除项不在模型目录: {', '.join(sorted(unknown))} (检查拼写; "
+             f"裸 id 会命中所有同名 provider)")
     if not SCORES.exists():
         fail(f"评分表不存在: {SCORES} — 走 SKILL.md 的 bootstrap 流程建立")
     table = yaml.safe_load(SCORES.read_text(encoding="utf-8"))
@@ -132,6 +158,8 @@ def main() -> None:
 
     rows = []
     for full in scoped:
+        if excluded_match(full, excluded):
+            continue
         entry = entries.get(full)
         unscored = entry is None
         scores = {d: (entry.get(d, 1) if entry else 1) for d in DIMS}
@@ -143,9 +171,11 @@ def main() -> None:
         total = sum(w * s for w, s in pairs) / wsum if wsum else 0.0
         rows.append((total, full, unscored, clamp(pref, supported_levels(full))))
 
+    if not rows:
+        fail(f"--exclude {' '.join(sorted(excluded))} 清空了候选; 减少排除项")
     # D026: 已评分按总分降序, 未评分恒殿后 (但未被过滤, 仅存它时仍会被选).
     rows.sort(key=lambda r: (r[2], -r[0]))
-    print(f"画像: {profile}")
+    print(f"画像: {profile}" + (f" (排除: {', '.join(sorted(excluded))})" if excluded else ""))
     for i, (total, full, unscored, thinking) in enumerate(rows, 1):
         tag = " [未评分]" if unscored else ""
         print(f"{i}. {full}  {total:.3f}  thinking={thinking}{tag}")
